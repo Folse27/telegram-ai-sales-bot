@@ -1,0 +1,40 @@
+# Render Blueprint. Database is Neon (external), so there is no `databases:` section. See PLAN.md §12.
+services:
+  - type: web
+    name: telegram-sales-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.7
+      # secrets: Render asks for these when the Blueprint is first created
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: PHOTO_CHANNEL_ID
+        sync: false
+      # behaviour
+      - key: ALLOWED_USER_IDS
+        value: ""
+      - key: PERSONA_NAME
+        value: Микола
+      - key: DEBOUNCE_SECONDS
+        value: "10"
+      - key: DEBOUNCE_MAX_WAIT
+        value: "25"
+      - key: PART_GAP_MIN
+        value: "1"
+      - key: PART_GAP_MAX
+        value: "3"
