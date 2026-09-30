@@ -14,6 +14,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiohttp import web
+from aiohttp.abc import AbstractAccessLogger
 
 from config import Settings, get_settings
 
@@ -59,6 +60,16 @@ def build_dispatcher() -> Dispatcher:
 # ═══════════════════════════ 10. App ═══════════════════════════
 
 POOL = web.AppKey("pool", object)
+
+
+class AccessLogger(AbstractAccessLogger):
+    """Masks the webhook secret in the path and skips health-check noise (Render + UptimeRobot)."""
+
+    def log(self, request: web.BaseRequest, response: web.StreamResponse, time: float) -> None:
+        if request.path == "/healthz":
+            return
+        path = "/tg/***" if request.path.startswith("/tg/") else request.path
+        self.logger.info("%s %s %s %.0fms", request.method, path, response.status, time * 1000)
 
 
 async def healthz(request: web.Request) -> web.Response:
@@ -122,7 +133,9 @@ def main() -> None:
         except KeyboardInterrupt:  # Ctrl+C on Windows surfaces here
             log.info("stopped")
     else:
-        web.run_app(build_app(settings, bot, dp), host="0.0.0.0", port=settings.port)
+        web.run_app(
+            build_app(settings, bot, dp), host="0.0.0.0", port=settings.port, access_log_class=AccessLogger
+        )
 
 
 if __name__ == "__main__":
