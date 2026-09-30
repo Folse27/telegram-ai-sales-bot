@@ -1,0 +1,9 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+# scrape.py HTML cache (re-downloadable)
+data/_cache/
+# local Claude Code settings/skills, not part of the bot
+.claude/
