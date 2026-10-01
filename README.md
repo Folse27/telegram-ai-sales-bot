@@ -35,6 +35,7 @@ Fill in `.env`; every key is explained in `env.example`. The most important ones
 | `DATABASE_URL`, `TEST_DATABASE_URL` | Two **separate** Neon endpoints (direct URLs, `?sslmode=require`) |
 | `ALLOWED_USER_IDS` | Empty = everyone |
 | `TESTER_IDS` | Users allowed to use `/clear` |
+| `MAX_PARTS` | Max bot messages per reply the model may send, 1–5 (default 3); order templates don't count |
 
 ## Run
 

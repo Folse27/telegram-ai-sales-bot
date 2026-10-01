@@ -38,6 +38,8 @@ services:
         value: adaptive
       - key: CACHE_TTL
         value: 1h
+      - key: MAX_PARTS  # set in the dashboard: 1–5 (default 3 if unset; not overwritten by syncs)
+        sync: false
       - key: PERSONA_NAME
         value: Микола
       - key: DEBOUNCE_SECONDS

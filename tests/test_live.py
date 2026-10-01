@@ -59,7 +59,7 @@ class World:
         self.tr = FakeTransport()
         self.cat, content = main.Catalog.load(), main.Templates.load_content()
         tpl = main.Templates(content, self.cat, s.persona_name)
-        self.val = main.Validator(self.cat, content)
+        self.val = main.Validator(self.cat, content, s.max_parts)
         orders = main.Orders(self.cat, tpl)
         self.ho = main.Handoff(SimpleNamespace(admin_chat_id=ADMIN), self.st, self.tr, tpl, orders)
         self.pl = main.LlmPipeline(s, self.st, self.tr, self.cat, tpl, self.val, main.LLM(s, self.cat, content, self.st),

@@ -9,7 +9,7 @@
     "properties": {
       "parts": {
         "type": "array",
-        "description": "1 to 3 messages sent in this order. Text parts: plain Ukrainian text, max 700 characters, no markdown. Order templates (order_summary, order_confirmed, payment_details, order_to_manager, order_cancelled) take no parameters: Python fills every value and checks that they are due.",
+        "description": "1 to {{max_parts}} messages sent in this order (order templates don't count toward the limit). Text parts: plain Ukrainian text, max 700 characters, no markdown. Order templates (order_summary, order_confirmed, payment_details, order_to_manager, order_cancelled) take no parameters: Python fills every value and checks that they are due.",
         "items": {
           "type": "object",
           "additionalProperties": false,

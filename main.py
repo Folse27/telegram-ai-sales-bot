@@ -522,7 +522,8 @@ class Check:
 class Validator:
     """PLAN.md §5 post-generation checks. Text parts are checked; template output is Python's and trusted."""
 
-    def __init__(self, catalog: Catalog, content: dict):
+    def __init__(self, catalog: Catalog, content: dict, max_parts: int = 3):
+        self.max_parts = max_parts
         self.catalog = catalog
         pay = content["templates"]["payment_details"]["text_uk"]
         self.payment_markers = [m for m in re.findall(r"UA\d{27}|\d{10}", pay)] + ["ДЕМО-ОТРИМУВАЧ", "ДЕМО-БАНК"]
@@ -551,8 +552,9 @@ class Validator:
         ch, cat = Check(), self.catalog
         parts = data.get("parts") or []
         ordering = (data.get("order_update") or {}).get("action", "none") != "none"
-        if len(parts) > 3 or (not parts and not ordering):  # 0 parts only when Python sends the order messages
-            ch.errors.append(f"parts must contain 1 to 3 items, got {len(parts)}")
+        counted = [p for p in parts if p.get("template_id") not in ORDER_TEMPLATES]  # order templates don't count
+        if len(counted) > self.max_parts or (not parts and not ordering):  # 0 parts only when Python sends the order messages
+            ch.errors.append(f"parts must contain 1 to {self.max_parts} items (order templates not counted), got {len(counted)}")
         for i, part in enumerate(parts):
             where = f"part {i + 1}"
             if part.get("kind") == "text":
@@ -639,7 +641,7 @@ class LLM:
         self.settings, self.catalog, self.content, self.storage = settings, catalog, content, storage
         self.client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None,
                                                max_retries=2, timeout=settings.llm_timeout)
-        self.tool = json.loads(REPLY_TOOL_PATH.read_text(encoding="utf-8"))
+        self.tool = json.loads(REPLY_TOOL_PATH.read_text(encoding="utf-8").replace("{{max_parts}}", str(settings.max_parts)))
         self.system = build_system(settings, catalog, content)
         self.reference_numbers = reference_numbers(self.system)
         self.params = model_params(settings.model, settings.llm_effort, settings.llm_thinking)
@@ -700,6 +702,7 @@ def build_system(settings: Settings, catalog: Catalog, content: dict) -> list[di
         f"- {f['q']} {clean_site_text(f['a'])}" for f in catalog.vat_policy["faq"]]
     values = {
         "persona_name": settings.persona_name,
+        "max_parts": str(getattr(settings, "max_parts", 3)),
         "catalog_version": catalog.version,
         "catalog_index": catalog.index_lines(),
         "departments": "\n".join(deps),
@@ -1690,7 +1693,7 @@ async def build_runtime(settings: Settings, bot: Bot) -> Runtime:
     llm = LLM(settings, catalog, content, storage)
     orders = Orders(catalog, templates)
     handoff = Handoff(settings, storage, transport, templates, orders)
-    pipeline = LlmPipeline(settings, storage, transport, catalog, templates, Validator(catalog, content), llm,
+    pipeline = LlmPipeline(settings, storage, transport, catalog, templates, Validator(catalog, content, settings.max_parts), llm,
                            orders, handoff)
     sessions = SessionManager(pipeline, transport, SessionConfig.from_settings(settings))
     log.info("catalog %s: %d products, %d photos; model %s (%s); admin chat %s; %d tester(s)", catalog.version,

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     # Behaviour
     persona_name: str = "Микола"
+    max_parts: int = 3  # bot messages per reply the model may send (1–5); order templates don't count
     debounce_seconds: float = 10
     debounce_max_wait: float = 25
     part_gap_min: float = 1
@@ -64,6 +65,13 @@ class Settings(BaseSettings):
     def _ttl(cls, v):
         if v not in ("5m", "1h"):
             raise ValueError("CACHE_TTL must be 5m or 1h (Anthropic offers only these two cache lifetimes)")
+        return v
+
+    @field_validator("max_parts")
+    @classmethod
+    def _parts(cls, v):
+        if not 1 <= v <= 5:
+            raise ValueError("MAX_PARTS must be 1–5")
         return v
 
     @field_validator("allowed_user_ids", "tester_ids", mode="before")
