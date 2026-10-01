@@ -1,0 +1,116 @@
+{
+  "name": "reply",
+  "description": "Send your answer to the client. Call it exactly once per turn. Python renders templates from the catalog, so prices, totals, photos and contacts in templates are always correct.",
+  "strict": true,
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["parts", "intent", "client_language", "products_referenced", "escalate", "order_update"],
+    "properties": {
+      "parts": {
+        "type": "array",
+        "description": "1 to 3 messages sent in this order. Text parts: plain Ukrainian text, max 700 characters, no markdown.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text", "template_id", "product_slug", "color_id", "department", "items"],
+          "properties": {
+            "kind": {"type": "string", "enum": ["text", "template"]},
+            "text": {"type": ["string", "null"], "description": "Required when kind=text, else null."},
+            "template_id": {
+              "anyOf": [
+                {"type": "string", "enum": ["product_card", "product_photos", "product_color", "price_quote", "vat_explainer", "department_contact", "services_list"]},
+                {"type": "null"}
+              ],
+              "description": "Required when kind=template, else null."
+            },
+            "product_slug": {"type": ["string", "null"], "description": "For product_card, product_photos, product_color, vat_explainer."},
+            "color_id": {"type": ["string", "null"], "description": "For product_color: a colour id from the product card."},
+            "department": {
+              "anyOf": [
+                {"type": "string", "enum": ["sales", "repair", "tender", "distribution", "b2b_b2g", "export", "events", "vacancies"]},
+                {"type": "null"}
+              ],
+              "description": "For department_contact."
+            },
+            "items": {
+              "type": ["array", "null"],
+              "description": "For price_quote only: 1 to 5 lines.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["product_slug", "option_ids", "qty"],
+                "properties": {
+                  "product_slug": {"type": "string"},
+                  "option_ids": {"type": "array", "items": {"type": "string"}},
+                  "qty": {"type": "integer"}
+                }
+              }
+            }
+          }
+        }
+      },
+      "intent": {
+        "type": "string",
+        "enum": ["greeting", "product_info", "price", "recommendation", "order", "order_confirm", "vat", "department", "bot_identity", "smalltalk", "off_topic", "other"]
+      },
+      "client_language": {"type": "string", "enum": ["uk", "ru", "en", "other"]},
+      "products_referenced": {"type": "array", "items": {"type": "string"}, "description": "Slugs of products this reply is about."},
+      "escalate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["needed", "reason", "department", "summary_uk"],
+        "properties": {
+          "needed": {"type": "boolean"},
+          "reason": {
+            "type": "string",
+            "enum": ["none", "unknown_fact", "vat_eligibility", "legal_entity", "bulk_or_custom", "complaint", "payment_issue", "client_request", "abuse"]
+          },
+          "department": {
+            "type": "string",
+            "enum": ["none", "sales", "repair", "tender", "distribution", "b2b_b2g", "export", "events", "vacancies"]
+          },
+          "summary_uk": {"type": ["string", "null"], "description": "One or two sentences for the manager, in Ukrainian."}
+        }
+      },
+      "order_update": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "items", "customer", "vat_mode"],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["none", "add_item", "remove_item", "set_customer", "request_summary", "confirm", "cancel"]
+          },
+          "items": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["product_slug", "option_ids", "color_id", "qty"],
+              "properties": {
+                "product_slug": {"type": "string"},
+                "option_ids": {"type": "array", "items": {"type": "string"}},
+                "color_id": {"type": ["string", "null"]},
+                "qty": {"type": "integer"}
+              }
+            }
+          },
+          "customer": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["full_name", "phone", "city", "np_branch", "buyer_type"],
+            "properties": {
+              "full_name": {"type": ["string", "null"]},
+              "phone": {"type": ["string", "null"]},
+              "city": {"type": ["string", "null"]},
+              "np_branch": {"type": ["string", "null"]},
+              "buyer_type": {"type": "string", "enum": ["unknown", "individual", "fop", "legal_entity", "military_unit"]}
+            }
+          },
+          "vat_mode": {"type": "string", "enum": ["with_vat", "without_vat_requested"]}
+        }
+      }
+    }
+  }
+}

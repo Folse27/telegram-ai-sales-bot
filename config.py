@@ -33,7 +33,11 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: str = ""
-    model: str = "claude-haiku-4-5"
+    model: str = "claude-haiku-4-5"  # MODEL env; main.py § LLM adapts request params per model family
+    llm_max_tokens: int = 1200
+    llm_timeout: float = 20.0
+    llm_temperature: float = 0.2  # low: Haiku follows the examples more closely; sent only to models that accept it
+    history_turns: int = 20
 
     # Postgres (Neon)
     database_url: str = ""

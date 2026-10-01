@@ -26,6 +26,8 @@ services:
       - key: PHOTO_CHANNEL_ID
         sync: false
       # behaviour
+      - key: MODEL
+        value: claude-haiku-4-5
       - key: ALLOWED_USER_IDS
         value: ""
       - key: PERSONA_NAME
