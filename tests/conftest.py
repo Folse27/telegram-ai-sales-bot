@@ -80,6 +80,9 @@ class FakeTransport:
         self.calls.append(("copy", to_chat_id, from_chat_id, message_id, reply_to))
         return next(self._ids)
 
+    async def edit_markup(self, chat_id, message_id, markup) -> None:
+        self.calls.append(("edit_markup", chat_id, message_id, markup))
+
 
 class FakePipeline:
     """Scripted stand-in for the LLM pipeline: generation takes `gen_time` virtual seconds."""
@@ -113,7 +116,7 @@ class FakePipeline:
     async def send_part(self, chat_id: int, part) -> None:
         self.sent.append((self.clock.now(), part))
 
-    async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list) -> None:
+    async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list, reply: Reply) -> None:
         self.committed.append(([m.text for m in batch], list(sent_parts)))
 
     async def on_error(self, chat_id: int, batch: list[Incoming], exc: Exception) -> None:

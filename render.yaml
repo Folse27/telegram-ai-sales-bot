@@ -26,10 +26,18 @@ services:
       - key: PHOTO_CHANNEL_ID
         sync: false
       # behaviour
-      - key: MODEL
-        value: claude-haiku-4-5
+      - key: MODEL  # set in the dashboard: claude-haiku-4-5 or claude-sonnet-5-5 (not overwritten by syncs)
+        sync: false
       - key: ALLOWED_USER_IDS
         value: ""
+      - key: TESTER_IDS
+        sync: false
+      - key: LLM_EFFORT
+        value: low
+      - key: LLM_THINKING
+        value: adaptive
+      - key: CACHE_TTL
+        value: 1h
       - key: PERSONA_NAME
         value: Микола
       - key: DEBOUNCE_SECONDS

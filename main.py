@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -15,14 +16,17 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 import asyncpg
 import yaml
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.dispatcher.event.bases import SkipHandler
+from aiogram.filters import Command, CommandStart
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
-from aiogram.types import InputMediaPhoto, LinkPreviewOptions, Message, Update
+from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
+                           LinkPreviewOptions, Message, Update)
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiohttp import web
 from aiohttp.abc import AbstractAccessLogger
@@ -85,6 +89,7 @@ CREATE TABLE IF NOT EXISTS handoffs (
     created_at       timestamptz NOT NULL DEFAULT now(),
     closed_at        timestamptz
 );
+ALTER TABLE handoffs ADD COLUMN IF NOT EXISTS taken_by text;
 CREATE TABLE IF NOT EXISTS relay_map (
     admin_message_id  bigint PRIMARY KEY,
     chat_id           bigint NOT NULL,
@@ -189,6 +194,14 @@ class Storage:
             " RETURNING id",
             chat_id, role, text, tg_message_id, answered, meta,
         )
+
+    async def wipe_chat(self, chat_id: int) -> None:
+        """/clear for testers: forget this chat's history, orders and handoffs (LLM cost log is kept)."""
+        async with self.pool.acquire() as conn, conn.transaction():
+            for table in ("relay_map", "handoffs", "orders", "messages"):
+                await conn.execute(f"DELETE FROM {table} WHERE chat_id = $1", chat_id)
+            await conn.execute("UPDATE clients SET mode = 'BOT', mode_changed_at = now(), last_manager_at = NULL"
+                               " WHERE chat_id = $1", chat_id)
 
     async def mark_answered(self, message_ids: list[int]) -> None:
         if message_ids:
@@ -393,6 +406,8 @@ class Catalog:
 
 MODEL_TEMPLATES = ("product_card", "product_photos", "product_color", "price_quote", "vat_explainer",
                    "department_contact", "services_list")
+# The model chooses these too, but only Python decides which are due (order state) and fills every value.
+ORDER_TEMPLATES = ("order_summary", "order_confirmed", "payment_details", "order_to_manager", "order_cancelled")
 
 
 @dataclass
@@ -404,6 +419,7 @@ class RenderedPart:
     file_ids: list[str] = field(default_factory=list)
     history_text: str = ""
     meta: dict | None = None  # first part of a reply carries {"products": [...]} into messages.meta
+    template_id: str | None = None  # None = the model's own free text
 
 
 def plain(html_text: str) -> str:
@@ -423,7 +439,7 @@ class Templates:
         """Render a text template; values are HTML-escaped unless they are already-built HTML (`*_html`)."""
         esc = {k: (v if k.endswith("_html") else html.escape(str(v))) for k, v in values.items()}
         body = self.t[template_id]["text_uk"].format(**{k.removesuffix("_html"): v for k, v in esc.items()})
-        return RenderedPart("text", body, history_text=plain(body))
+        return RenderedPart("text", body, history_text=plain(body), template_id=template_id)
 
     def _photos(self, keys: list[str], caption: str, label: str) -> RenderedPart:
         ids = [self.catalog.file_ids[k] for k in keys if k in self.catalog.file_ids]
@@ -476,6 +492,11 @@ NUM_RE = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?!\d)|\d+(?:[.,]\d+)?")
 URL_EMAIL_RE = re.compile(r"https?://\S+|[\w.+-]+@[\w-]+\.[\w.]+")
 RUSSIAN_LETTERS_RE = re.compile(r"[ыэъёЫЭЪЁ]")
 UKRAINIAN_LETTERS_RE = re.compile(r"[іїєґІЇЄҐ]")
+RUSSIAN_WORDS_RE = re.compile(  # Russian-only words without ы/э/ъ/ё (Haiku slips them into Ukrainian)
+    r"\b(получател\w*|сколько|стоит|стоимост\w*|наличи[еи]|спасибо|пожалуйста|здравствуйте|можно|нужно|конечно|"
+    r"сейчас|только|когда|хорошо|если|пока что)\b", re.I)
+SUMMARY_TALK_RE = re.compile(r"перевір|отримувач|получат|разом", re.I)
+COURTESY_ONLY_RE = re.compile(r"(дякую|дякуємо|чудово|добре|відмінно|супер|звісно)[\s!.,]*(\S{0,12}[!.]*)?", re.I)
 IDENTITY_OK_RE = re.compile(r"бот|штучн|ШІ", re.I)
 HUMAN_CLAIM_RE = re.compile(r"\bя\s+(жива\s+)?людина\b", re.I)
 
@@ -510,6 +531,9 @@ class Validator:
         errs = []
         if RUSSIAN_LETTERS_RE.search(text):
             errs.append("uses Russian letters (ы/э/ъ/ё): write in Ukrainian only")
+        russian = sorted({m.lower() for m in RUSSIAN_WORDS_RE.findall(text)})
+        if russian:
+            errs.append(f"Russian words {russian}: use the Ukrainian ones (отримувач, скільки, коштує, можна, дякую…)")
         words = re.findall(r"[^\W\d_]+", URL_EMAIL_RE.sub(" ", text))
         cyr = sum(len(w) for w in words if re.match(r"[а-яіїєґ']", w, re.I))
         lat = sum(len(w) for w in words if re.match(r"[a-z]", w, re.I) and w.lower() not in self.catalog.latin_words)
@@ -525,7 +549,8 @@ class Validator:
         price, so it is only accepted for one of them (None = no restriction, used by unit tests of other checks)."""
         ch, cat = Check(), self.catalog
         parts = data.get("parts") or []
-        if not 1 <= len(parts) <= 3:
+        ordering = (data.get("order_update") or {}).get("action", "none") != "none"
+        if len(parts) > 3 or (not parts and not ordering):  # 0 parts only when Python sends the order messages
             ch.errors.append(f"parts must contain 1 to 3 items, got {len(parts)}")
         for i, part in enumerate(parts):
             where = f"part {i + 1}"
@@ -564,6 +589,8 @@ class Validator:
 
     def _template_errors(self, part: dict) -> list[str]:
         tid, cat = part.get("template_id"), self.catalog
+        if tid in ORDER_TEMPLATES:
+            return []  # checked against the order state in the pipeline (order_template_issues)
         if tid not in MODEL_TEMPLATES:
             return [f"template_id {tid!r} is not allowed"]
         if tid in ("product_card", "product_photos", "product_color", "vat_explainer"):
@@ -586,50 +613,69 @@ class Validator:
 
 # ═══════════════════════════ 5. LLM ═══════════════════════════
 
-def model_params(model: str) -> dict:
-    """Per-family request differences (sampling params and thinking were removed on newer models)."""
-    if model.startswith(("claude-haiku-4-5", "claude-3", "claude-sonnet-4-5", "claude-opus-4-5", "claude-opus-4-1")):
-        return {"temperature": None}  # filled from settings
-    if model.startswith(("claude-sonnet-5", "claude-opus-5", "claude-opus-4-")) and not model.startswith("claude-opus-5-5"):
-        return {"thinking": {"type": "disabled"}}  # forced tool_choice can't be combined with thinking
-    return {"tool_choice_auto": True}  # Fable 5.1 / Opus 5.5 / unknown: forced tool_choice is a 400
+SAFE_PARAMS = {"forced": False, "max_tokens": 4000}  # accepted by every current model
+
+
+def model_params(model: str, effort: str = "low", thinking: str = "adaptive") -> dict:
+    """Request differences per model family, checked against the model docs on 2026-10-01.
+    forced: tool_choice {"type": "tool"} is allowed; temperature: sampling params accepted;
+    thinking/effort: sent as given; max_tokens: floor when the model may think (thinking counts toward it)."""
+    if re.match(r"claude-(haiku-4-5|3|sonnet-4-5|opus-4-5|opus-4-1)", model):
+        return {"forced": True, "temperature": True}
+    if re.match(r"claude-(sonnet-5|opus-5|opus-4-[678]|sonnet-4-6)(-\d{8})?$", model):  # exact ids, not the 5.5 ones
+        return {"forced": True, "thinking": {"type": "disabled"}}  # forced tool use can't be combined with thinking
+    if model.startswith("claude-sonnet-5-5"):  # no forced tool use, no "disabled", no temperature
+        mode = "between_tools" if thinking == "between_tools" else "adaptive"
+        return {"forced": False, "thinking": {"type": mode}, "effort": effort, "max_tokens": 4000}
+    return {"forced": False, "effort": effort, "max_tokens": 4000}  # Opus 5.5, Fable, newer: thinking always on
 
 
 class LLM:
     def __init__(self, settings: Settings, catalog: Catalog, content: dict, storage: Storage):
         import anthropic  # imported here so unit tests of other sections don't need the SDK configured
 
+        self.anthropic = anthropic
         self.settings, self.catalog, self.content, self.storage = settings, catalog, content, storage
         self.client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None,
                                                max_retries=2, timeout=settings.llm_timeout)
         self.tool = json.loads(REPLY_TOOL_PATH.read_text(encoding="utf-8"))
         self.system = build_system(settings, catalog, content)
         self.reference_numbers = reference_numbers(self.system)
-        self.params = model_params(settings.model)
-        if "temperature" in self.params:
-            self.params["temperature"] = settings.llm_temperature
+        self.params = model_params(settings.model, settings.llm_effort, settings.llm_thinking)
 
     def request(self, messages: list[dict]) -> dict:
-        req = {"model": self.settings.model, "max_tokens": self.settings.llm_max_tokens, "system": self.system,
-               "tools": [self.tool], "messages": messages}
-        params = dict(self.params)
-        if params.pop("tool_choice_auto", False):
-            req["tool_choice"] = {"type": "auto"}
-        else:
-            req["tool_choice"] = {"type": "tool", "name": "reply"}
-        if "temperature" in params:  # SDK 1.x dropped the kwarg; models before 4.6 (Haiku 4.5) still honour it
-            req["extra_body"] = {"temperature": params.pop("temperature")}
-        req.update(params)
+        p = self.params
+        req = {"model": self.settings.model, "system": self.system, "tools": [self.tool], "messages": messages,
+               "max_tokens": max(self.settings.llm_max_tokens, p.get("max_tokens", 0)),
+               "tool_choice": {"type": "tool", "name": "reply"} if p.get("forced") else {"type": "auto"}}
+        if p.get("temperature"):  # SDK 1.x dropped the kwarg; models before 4.6 (Haiku 4.5) still honour it
+            req["extra_body"] = {"temperature": self.settings.llm_temperature}
+        if p.get("thinking"):
+            req["thinking"] = p["thinking"]
+        if p.get("effort"):
+            req["output_config"] = {"effort": p["effort"]}
         return req
 
     async def call(self, chat_id: int, messages: list[dict], attempt: int) -> tuple[Any, dict | None, int]:
         t0 = time.monotonic()
-        resp = await self.client.messages.create(**self.request(messages))
+        try:
+            resp = await self.client.messages.create(**self.request(messages))
+        except self.anthropic.BadRequestError as e:
+            # A model that rejects one of our per-family params (a new model id, changed rules): fall back to the
+            # request every current model accepts, keep it for the rest of the process, and retry once.
+            if self.params == SAFE_PARAMS or not re.search(r"tool_choice|thinking|temperature|effort|output_config",
+                                                           str(e)):
+                raise
+            log.warning("model %s rejected request params (%s); switching to safe params", self.settings.model, e)
+            self.params = dict(SAFE_PARAMS)
+            resp = await self.client.messages.create(**self.request(messages))
         block = next((b for b in resp.content if b.type == "tool_use" and b.name == "reply"), None)
         latency = int((time.monotonic() - t0) * 1000)
-        log.info("llm chat=%s attempt=%d %dms in=%s out=%s cache_read=%s cache_write=%s", chat_id, attempt, latency,
-                 resp.usage.input_tokens, resp.usage.output_tokens, resp.usage.cache_read_input_tokens,
-                 resp.usage.cache_creation_input_tokens)
+        log.info("llm chat=%s attempt=%d %dms in=%s out=%s cache_read=%s cache_write=%s stop=%s", chat_id, attempt,
+                 latency, resp.usage.input_tokens, resp.usage.output_tokens, resp.usage.cache_read_input_tokens,
+                 resp.usage.cache_creation_input_tokens, resp.stop_reason)
+        if resp.stop_reason in ("refusal", "max_tokens"):  # unusable: treated like a missing reply
+            block = None
         return resp, (block and {"id": block.id, "input": block.input}), latency
 
 
@@ -663,15 +709,410 @@ def build_system(settings: Settings, catalog: Catalog, content: dict) -> list[di
     for k, v in values.items():
         rules, reference = rules.replace("{{" + k + "}}", v), reference.replace("{{" + k + "}}", v)
     return [{"type": "text", "text": rules.strip()},
-            {"type": "text", "text": reference.strip(), "cache_control": {"type": "ephemeral"}}]
+            {"type": "text", "text": reference.strip(), "cache_control": cache_control(settings)}]
+
+
+def cache_control(settings: Any) -> dict:
+    """CACHE_TTL: 5m = default lifetime (write 1.25× input price); 1h = write 2×, survives pauses up to an hour."""
+    if getattr(settings, "cache_ttl", "1h") == "1h":
+        return {"type": "ephemeral", "ttl": "1h"}
+    return {"type": "ephemeral"}
 
 
 # ═══════════════════════════ 6. Orders ═══════════════════════════
-# Step 6: order state machine (PLAN.md §7).
+
+EDITABLE = ("DRAFT", "AWAITING_CONFIRMATION")
+FINAL = ("PAID", "CANCELLED")
+CUSTOMER_FIELDS = ("full_name", "phone", "city", "np_branch", "buyer_type")
+REVIEW_BUYERS = {"legal_entity": "на компанію", "military_unit": "для військової частини"}
+
+
+def normalize_phone(raw: str | None) -> str | None:
+    """Ukrainian mobile in E.164 (+380XXXXXXXXX) or None."""
+    d = re.sub(r"\D", "", raw or "")
+    if len(d) == 10 and d.startswith("0"):
+        d = "38" + d
+    return "+" + d if len(d) == 12 and d.startswith("380") else None
+
+
+@dataclass
+class OrderPlan:
+    """What Python will do with the model's order_update. Built in generate(), written in commit()."""
+
+    order_id: int | None = None
+    status: str | None = None  # new status; None = no change at all
+    data: dict | None = None
+    parts: list[RenderedPart] = field(default_factory=list)  # Python-only templates sent after the model's parts
+    errors: list[str] = field(default_factory=list)  # fed back to the model like validator errors
+    payment_sent: bool = False
+    review_reason: str | None = None  # MANAGER_REVIEW → handoff (legal_entity / vat_eligibility)
+    notify: str | None = None  # admin-group notification kind: payment_sent / cancelled
+
+
+ORDER_TEMPLATE_RULES = {
+    "order_summary": "only when your order_update completes the order (items and every customer field known)",
+    "order_confirmed": "only with action confirm, after the summary was sent",
+    "payment_details": "only with action confirm, for a фізособа/ФОП order with VAT, once per order",
+    "order_to_manager": "only with action confirm, for a company, military-unit or without-VAT order",
+    "order_cancelled": "only with action cancel",
+}
+
+
+def order_template_issues(sent: list[str], plan: OrderPlan, missing: list[str] | None = None) -> list[str]:
+    """Compare the order templates the model put in `parts` with the ones the order state makes due this turn."""
+    due = [p.template_id for p in plan.parts]
+    issues = [f"{t} is listed twice" for t in dict.fromkeys(sent) if sent.count(t) > 1]
+    for t in dict.fromkeys(sent):
+        if t not in due:
+            now = f"this turn only {due} are due" if due else "no order template is due this turn"
+            if missing:
+                now += f"; the order still misses {missing}"
+            issues.append(f"{t} can't be sent now ({now}): {ORDER_TEMPLATE_RULES[t]}")
+    issues += [f"your order_update makes {t} due: add the template {t} to parts" for t in due if t not in sent]
+    return issues
+
+
+class Orders:
+    """PLAN.md §7 state machine. Pure: works on plain dicts, the pipeline does the I/O."""
+
+    def __init__(self, catalog: Catalog, templates: Templates):
+        self.catalog, self.templates = catalog, templates
+
+    @staticmethod
+    def missing(data: dict) -> list[str]:
+        c = data["customer"]
+        miss = [f for f in CUSTOMER_FIELDS[:4] if not c.get(f)]
+        return miss + (["buyer_type"] if c.get("buyer_type", "unknown") == "unknown" else [])
+
+    @staticmethod
+    def summary_hash(data: dict) -> str:
+        key = json.dumps([data["items"], data["customer"], data["vat_mode"]], ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+    def lines(self, data: dict) -> str:
+        out = []
+        for it in data["items"]:
+            p = self.catalog.products.get(it["slug"], {})
+            opts = {o["id"]: o["label_uk"] for o in p.get("options", [])}
+            extra = [opts.get(o, o) for o in it["option_ids"]]
+            colour = next((c["label_uk"] for c in p.get("colors", []) if c["id"] == it.get("color_id")), None)
+            text = it["short_name"] + (f" (+ {', '.join(extra)})" if extra else "") + (f", колір «{colour}»" if colour else "")
+            out.append(f"• {html.escape(text)} × {it['qty']} — {fmt_uah(it['line_with_vat'])} грн")
+        return "\n".join(out)
+
+    def prompt_state(self, current: dict | None, latest: dict | None) -> dict | str:
+        """What the model sees in <order_state>."""
+        if current:
+            d = current["data"]
+            return {"order_id": current["id"], "status": current["status"], "vat_mode": d["vat_mode"],
+                    "items": [{k: it[k] for k in ("slug", "short_name", "option_ids", "color_id", "qty", "line_with_vat")}
+                              for it in d["items"]],
+                    "total_with_vat": d["totals"]["with_vat"], "customer": d["customer"], "missing": self.missing(d)}
+        if latest and latest["status"] != "CANCELLED":
+            return {"last_order": {"order_id": latest["id"], "status": latest["status"],
+                                   "total_with_vat": latest["data"]["totals"]["with_vat"]}}
+        return "none"
+
+    def plan(self, current: dict | None, latest: dict | None, ou: dict) -> OrderPlan:
+        action = ou.get("action", "none")
+        if action == "cancel":
+            target = current or (latest if latest and latest["status"] not in FINAL else None)
+            if not target:
+                return OrderPlan()
+            return OrderPlan(target["id"], "CANCELLED", target["data"],
+                             [self.templates.text("order_cancelled", order_id=target["id"])], notify="cancelled")
+        if action == "confirm":
+            if not current or current["status"] != "AWAITING_CONFIRMATION":
+                return OrderPlan()  # confirm is honoured only after Python sent the summary
+            d = current["data"]
+            buyer = d["customer"]["buyer_type"]
+            if d["vat_mode"] == "without_vat_requested" or buyer in REVIEW_BUYERS:
+                why = "без ПДВ" if d["vat_mode"] == "without_vat_requested" else REVIEW_BUYERS[buyer]
+                return OrderPlan(current["id"], "MANAGER_REVIEW", d,
+                                 [self.templates.text("order_to_manager", order_id=current["id"], reason_uk=why)],
+                                 review_reason="vat_eligibility" if why == "без ПДВ" else "legal_entity")
+            parts = [self.templates.text("order_confirmed", order_id=current["id"])]
+            if not current.get("payment_sent_at"):  # DB guard: payment details at most once per order
+                parts.append(self.templates.text("payment_details", total_with_vat=fmt_uah(d["totals"]["with_vat"])))
+            return OrderPlan(current["id"], "PAYMENT_SENT", d, parts, payment_sent=True, notify="payment_sent")
+        has_customer = any(v not in (None, "", "unknown") for v in (ou.get("customer") or {}).values())
+        if action == "none" and not has_customer and ou.get("vat_mode") != "without_vat_requested":
+            return OrderPlan()
+        if action == "none" and not current:
+            return OrderPlan()  # customer details without anything to order: nothing to store yet
+
+        data = json.loads(json.dumps(current["data"])) if current else {
+            "vat_mode": "with_vat", "catalog_version": self.catalog.version, "items": [],
+            "customer": {"full_name": None, "phone": None, "city": None, "np_branch": None, "buyer_type": "unknown"},
+            "totals": {"with_vat": 0}, "summary_hash": None}
+        errors: list[str] = []
+        if action == "add_item":
+            for it in ou.get("items") or []:
+                errors += self._add(data, it)
+        elif action == "remove_item":
+            gone = {it["product_slug"] for it in ou.get("items") or []}
+            data["items"] = [it for it in data["items"] if it["slug"] not in gone]
+        for k, v in (ou.get("customer") or {}).items():
+            if k == "phone" and v:
+                phone = normalize_phone(v)
+                if not phone:
+                    errors.append(f"phone {v!r} is not a valid Ukrainian number: leave it null and ask the client "
+                                  "for a number like +380XXXXXXXXX")
+                    continue
+                data["customer"]["phone"] = phone
+            elif k == "buyer_type":
+                if v and v != "unknown":
+                    data["customer"]["buyer_type"] = v
+            elif v:
+                data["customer"][k] = str(v).strip()
+        if ou.get("vat_mode") == "without_vat_requested":
+            data["vat_mode"] = "without_vat_requested"
+        if errors:
+            return OrderPlan(errors=errors)
+
+        data["totals"] = {"with_vat": sum(it["line_with_vat"] for it in data["items"])}
+        new_hash = self.summary_hash(data)
+        if data["items"] and not self.missing(data):
+            if current and current["status"] == "AWAITING_CONFIRMATION" and current["data"].get("summary_hash") == new_hash:
+                return OrderPlan()  # nothing changed: the summary the client sees is still valid
+            data["summary_hash"] = new_hash
+            summary = self.templates.text(
+                "order_summary", lines_html=self.lines(data), total_with_vat=fmt_uah(data["totals"]["with_vat"]),
+                full_name=data["customer"]["full_name"], phone=data["customer"]["phone"],
+                city=data["customer"]["city"], np_branch=data["customer"]["np_branch"])
+            return OrderPlan(current["id"] if current else None, "AWAITING_CONFIRMATION", data, [summary])
+        data["summary_hash"] = None  # any edit invalidates a summary that was sent
+        return OrderPlan(current["id"] if current else None, "DRAFT", data)
+
+    def _add(self, data: dict, it: dict) -> list[str]:
+        slug, qty = it.get("product_slug"), it.get("qty") or 1
+        options = sorted(dict.fromkeys(it.get("option_ids") or []))
+        lines, _, errors = self.catalog.quote([{"product_slug": slug, "option_ids": options, "qty": qty}])
+        if errors:
+            return errors
+        p = self.catalog.products[slug]
+        colour = it.get("color_id")
+        if colour and p["colors"] and colour not in {c["id"] for c in p["colors"]}:
+            return [f"{slug}: colour {colour!r} not in {[c['id'] for c in p['colors']]}"]
+        if not p["colors"]:
+            colour = None
+        line = lines[0]
+        new = {"product_id": p["id"], "slug": slug, "short_name": p["short_name"], "option_ids": options,
+               "color_id": colour, "qty": qty, "unit_with_vat": line.unit_with_vat, "line_with_vat": line.line_with_vat}
+        for i, old in enumerate(data["items"]):
+            if old["slug"] == slug and old["option_ids"] == options and old.get("color_id") == colour:
+                data["items"][i] = new  # restating the same line sets its quantity
+                return []
+        data["items"].append(new)
+        return []
 
 
 # ═══════════════════════════ 7. Handoff ═══════════════════════════
-# Step 6: admin card, buttons, relay, admin commands (PLAN.md §8).
+
+REASON_UK = {
+    "unknown_fact": "питання поза каталогом", "vat_eligibility": "ціна без ПДВ", "legal_entity": "замовлення від юрособи / в/ч",
+    "bulk_or_custom": "нестандартний запит", "complaint": "скарга", "payment_issue": "оплата / реквізити",
+    "client_request": "клієнт просить людину", "abuse": "некоректна поведінка", "validator_failed": "бот не зміг відповісти",
+}
+HUMAN_EXPIRES_SQL = "interval '12 hours'"
+
+
+def handoff_keyboard(handoff_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✋ Взяти", callback_data=f"ho:take:{handoff_id}"),
+        InlineKeyboardButton(text="🤖 Повернути боту", callback_data=f"ho:bot:{handoff_id}"),
+        InlineKeyboardButton(text="✅ Закрити", callback_data=f"ho:close:{handoff_id}"),
+    ]])
+
+
+class Handoff:
+    """PLAN.md §8: admin card with buttons, client ↔ manager relay, admin commands. Everything goes via Transport."""
+
+    def __init__(self, settings: Settings, storage: Storage, transport: Transport, templates: Templates, orders: Orders):
+        self.settings, self.storage, self.transport, self.templates, self.orders = settings, storage, transport, templates, orders
+        self.admin = settings.admin_chat_id
+        self.departments = templates.content["departments"]
+        # Set by the runtime: answers the client's trailing messages when a manager hands the chat back.
+        self.on_resume: Callable[[int], Awaitable[None]] | None = None
+
+    async def is_human(self, chat_id: int) -> bool:
+        """HUMAN mode, with the lazy 12 h auto-return (no timers, so Neon can sleep)."""
+        row = await self.storage.pool.fetchrow(
+            f"SELECT mode, greatest(mode_changed_at, coalesce(last_manager_at, mode_changed_at)) < now() - {HUMAN_EXPIRES_SQL}"
+            " AS expired FROM clients WHERE chat_id = $1", chat_id)
+        if not row or row["mode"] != "HUMAN":
+            return False
+        if row["expired"]:
+            await self.return_to_bot(chat_id, "expired")
+            return False
+        return True
+
+    async def open(self, chat_id: int, reason: str, department: str | None, summary: str | None, human: bool) -> None:
+        """Post (or extend) the admin card; HUMAN mode unless it was only a department routing."""
+        if human:
+            await self.storage.set_mode(chat_id, "HUMAN")
+        if not self.admin:
+            log.warning("ADMIN_CHAT_ID is empty: handoff for chat %s not posted", chat_id)
+            return
+        dept = self.departments.get(department or "", {}).get("title_uk", "—")
+        existing = await self.storage.pool.fetchrow(
+            "SELECT * FROM handoffs WHERE chat_id = $1 AND status IN ('open', 'taken') ORDER BY id DESC LIMIT 1", chat_id)
+        if existing and existing["card_message_id"]:
+            mid = await self.transport.send_text(
+                self.admin, f"➕ <b>Ще запит</b> ({html.escape(REASON_UK.get(reason, reason))}, {html.escape(dept)}): "
+                            f"{html.escape(summary or '—')}", reply_to=existing["card_message_id"])
+            await self._map(mid, chat_id, existing["id"])
+            return
+        hid = await self.storage.pool.fetchval(
+            "INSERT INTO handoffs (chat_id, reason, department, summary) VALUES ($1, $2, $3, $4) RETURNING id",
+            chat_id, reason, department, summary)
+        mid = await self.transport.send_text(self.admin, await self._card(hid, chat_id, reason, dept, summary, human),
+                                             reply_markup=handoff_keyboard(hid))
+        await self.storage.pool.execute("UPDATE handoffs SET card_message_id = $2 WHERE id = $1", hid, mid)
+        await self._map(mid, chat_id, hid)
+
+    async def _card(self, hid: int, chat_id: int, reason: str, dept: str, summary: str | None, human: bool) -> str:
+        c = await self.storage.get_client(chat_id)
+        who = html.escape(c["full_name"] or "—") if c else "—"
+        if c and c["username"]:
+            who += f" (@{html.escape(c['username'])})"
+        rows = (await self.storage.history(chat_id, limit=5))
+        icon = {"user": "👤", "assistant": "🤖", "manager": "🧑‍💼"}
+        last = "\n".join(f"{icon[r['role']]} {html.escape(r['text'][:200])}" for r in rows) or "—"
+        order = await self.order_snapshot(chat_id)
+        mode = "бот мовчить, відповідайте реплаєм на це повідомлення" if human else "бот продовжує розмову"
+        return (f"🔔 <b>Запит #{hid}</b> — {html.escape(REASON_UK.get(reason, reason))}\n"
+                f"Клієнт: {who} · id <code>{chat_id}</code>\nВідділ: {html.escape(dept)}\n"
+                f"Суть: {html.escape(summary or '—')}\n\n<b>Останні повідомлення:</b>\n{last}\n\n"
+                f"<b>Замовлення:</b> {order}\n\n<i>Режим: {mode}.</i>")
+
+    async def order_snapshot(self, chat_id: int) -> str:
+        r = await self.storage.pool.fetchrow("SELECT * FROM orders WHERE chat_id = $1 ORDER BY id DESC LIMIT 1", chat_id)
+        if not r:
+            return "немає"
+        d = r["data"]
+        c = d["customer"]
+        buyer = {"individual": "фізособа", "fop": "ФОП", "legal_entity": "юрособа", "military_unit": "в/ч"}.get(
+            c.get("buyer_type"), "тип покупця не вказано")
+        who = ", ".join(html.escape(str(c[k])) for k in ("full_name", "phone", "city") if c.get(k))
+        np = f", НП {html.escape(str(c['np_branch']))}" if c.get("np_branch") else ""
+        return (f"№{r['id']} {r['status']}, {fmt_uah(d['totals']['with_vat'])} грн\n{self.orders.lines(d)}"
+                f"\n{who or 'контакти ще не надано'}{np} · {buyer}")
+
+    async def _map(self, admin_message_id: int, chat_id: int, handoff_id: int | None) -> None:
+        if admin_message_id:
+            await self.storage.pool.execute(
+                "INSERT INTO relay_map (admin_message_id, chat_id, handoff_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                admin_message_id, chat_id, handoff_id)
+
+    async def relay_client(self, chat_id: int, tg_message_id: int) -> None:
+        """HUMAN mode: copy the client's message into the admin group under the open card."""
+        if not self.admin:
+            return
+        h = await self.storage.pool.fetchrow(
+            "SELECT * FROM handoffs WHERE chat_id = $1 AND status IN ('open', 'taken') ORDER BY id DESC LIMIT 1", chat_id)
+        if not h:  # e.g. HUMAN set by /bot misuse: open a minimal card so the message isn't lost
+            await self.open(chat_id, "client_request", None, "Повідомлення клієнта в режимі менеджера", human=True)
+            h = await self.storage.pool.fetchrow(
+                "SELECT * FROM handoffs WHERE chat_id = $1 AND status IN ('open', 'taken') ORDER BY id DESC LIMIT 1", chat_id)
+        mid = await self.transport.copy_message(self.admin, chat_id, tg_message_id, reply_to=h["card_message_id"])
+        await self._map(mid, chat_id, h["id"])
+
+    async def manager_reply(self, replied_to_id: int, admin_message_id: int, text: str) -> int | None:
+        """A manager replied to a mapped message: copy it to the client. Returns the client chat id."""
+        m = await self.storage.pool.fetchrow("SELECT * FROM relay_map WHERE admin_message_id = $1", replied_to_id)
+        if not m:
+            return None
+        await self.transport.copy_message(m["chat_id"], self.admin, admin_message_id)
+        await self.storage.save_message(m["chat_id"], "manager", text)
+        await self.storage.pool.execute("UPDATE clients SET last_manager_at = now() WHERE chat_id = $1", m["chat_id"])
+        await self.storage.pool.execute(
+            "UPDATE messages SET answered = true WHERE chat_id = $1 AND role = 'user' AND NOT answered", m["chat_id"])
+        return m["chat_id"]
+
+    async def return_to_bot(self, chat_id: int, status: str = "returned", resume: bool = False) -> None:
+        await self.storage.set_mode(chat_id, "BOT")
+        await self.storage.pool.execute(
+            "UPDATE handoffs SET status = $2, closed_at = now() WHERE chat_id = $1 AND status IN ('open', 'taken')",
+            chat_id, status)
+        if resume and self.on_resume:  # the client's last message(s) may still be unanswered
+            await self.on_resume(chat_id)
+
+    async def trailing_client_messages(self, chat_id: int) -> list:
+        """User messages after the last bot or manager message: what the client is still waiting on."""
+        return await self.storage.pool.fetch(
+            "SELECT id, text, tg_message_id FROM messages WHERE chat_id = $1 AND role = 'user' AND id > coalesce("
+            "(SELECT max(id) FROM messages WHERE chat_id = $1 AND role <> 'user'), 0) ORDER BY id", chat_id)
+
+    async def button(self, handoff_id: int, action: str, admin_name: str) -> str:
+        """Inline buttons on the card. Returns the toast text for the admin."""
+        h = await self.storage.pool.fetchrow("SELECT * FROM handoffs WHERE id = $1", handoff_id)
+        if not h:
+            return "Запит не знайдено"
+        if action == "take":
+            await self.storage.pool.execute("UPDATE handoffs SET status = 'taken', taken_by = $2 WHERE id = $1",
+                                            handoff_id, admin_name)
+            await self.storage.set_mode(h["chat_id"], "HUMAN")
+            mid = await self.transport.send_text(self.admin, f"✋ Запит #{handoff_id} взяв {html.escape(admin_name)}. "
+                                                             "Відповідайте реплаєм — бот мовчить.",
+                                                 reply_to=h["card_message_id"])
+            await self._map(mid, h["chat_id"], handoff_id)  # a reply to this notice also reaches the client
+            return "Взято. Бот мовчить."
+        await self.transport.edit_markup(self.admin, h["card_message_id"], None)
+        label = "повернуто боту" if action == "bot" else "закрито"
+        mid = await self.transport.send_text(self.admin, f"🤖 Запит #{handoff_id} {label} ({html.escape(admin_name)}).",
+                                             reply_to=h["card_message_id"])
+        await self._map(mid, h["chat_id"], handoff_id)
+        await self.return_to_bot(h["chat_id"], "returned" if action == "bot" else "closed", resume=True)
+        return "Бот знову відповідає клієнту."
+
+    # ── admin commands ──
+    async def command(self, text: str) -> str:
+        parts = text.split()
+        cmd, arg = parts[0].split("@")[0].lower(), (parts[1] if len(parts) > 1 else "")
+        if cmd == "/orders":
+            rows = await self.storage.pool.fetch("SELECT * FROM orders ORDER BY id DESC LIMIT 10")
+            return "\n".join(f"№{r['id']} · {r['status']} · {fmt_uah(r['data']['totals']['with_vat'])} грн · чат "
+                             f"<code>{r['chat_id']}</code>" for r in rows) or "Замовлень ще немає."
+        if not arg.isdigit():
+            return "Формат: /paid 17 · /cancel 17 · /bot 123456789 · /orders"
+        if cmd == "/bot":
+            await self.return_to_bot(int(arg), "returned", resume=True)
+            return f"🤖 Чат {arg}: бот знову відповідає."
+        order = await self.storage.pool.fetchrow("SELECT * FROM orders WHERE id = $1", int(arg))
+        if not order:
+            return f"Замовлення №{arg} не знайдено."
+        if cmd == "/paid":
+            if order["status"] != "PAYMENT_SENT":
+                return f"№{arg} має статус {order['status']}: /paid можливий лише після надсилання реквізитів."
+            await self._set_order(order, "PAID")
+            await self._tell_client(order["chat_id"], self.templates.text("payment_received"))
+            return f"✅ №{arg}: оплату зафіксовано, клієнта повідомлено."
+        if cmd == "/cancel":
+            if order["status"] in FINAL:
+                return f"№{arg} уже {order['status']}."
+            await self._set_order(order, "CANCELLED")
+            await self._tell_client(order["chat_id"], self.templates.text("order_cancelled", order_id=order["id"]))
+            return f"❌ №{arg} скасовано, клієнта повідомлено."
+        return "Невідома команда. Доступні: /paid, /cancel, /bot, /orders"
+
+    async def _set_order(self, order: Any, status: str) -> None:
+        await self.storage.pool.execute("UPDATE orders SET status = $2, updated_at = now() WHERE id = $1", order["id"], status)
+
+    async def _tell_client(self, chat_id: int, part: RenderedPart) -> None:
+        await self.transport.send_text(chat_id, part.text)
+        await self.storage.save_message(chat_id, "assistant", part.history_text)
+
+    async def notify_order(self, kind: str, order_id: int, chat_id: int) -> None:
+        if not self.admin:
+            return
+        snap = await self.order_snapshot(chat_id)
+        if kind == "payment_sent":
+            text = (f"🧾 <b>Замовлення №{order_id}</b>: реквізити надіслано, очікуємо оплату.\n{snap}\n\n"
+                    f"/paid {order_id} — оплату отримано · /cancel {order_id} — скасувати")
+        else:
+            text = f"❌ <b>Замовлення №{order_id}</b> скасовано клієнтом.\n{snap}"
+        await self._map(await self.transport.send_text(self.admin, text), chat_id, None)  # reply here → client
 
 
 # ═══════════════════════════ 8. Sessions ═══════════════════════════
@@ -702,6 +1143,7 @@ class Incoming:
 @dataclass
 class Reply:
     parts: list[Any]  # opaque to the session; Pipeline.send_part knows how to deliver each one
+    extra: dict = field(default_factory=dict)  # pipeline data for commit (order plan, escalation)
 
 
 @dataclass
@@ -723,7 +1165,7 @@ class Pipeline(Protocol):
     async def relay_to_human(self, chat_id: int, batch: list[Incoming]) -> None: ...
     async def generate(self, chat_id: int, batch: list[Incoming]) -> Reply: ...
     async def send_part(self, chat_id: int, part: Any) -> None: ...
-    async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list[Any]) -> None: ...
+    async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list[Any], reply: Reply) -> None: ...
     async def on_error(self, chat_id: int, batch: list[Incoming], exc: Exception) -> None: ...
 
 
@@ -831,7 +1273,7 @@ class ChatSession:
             self.state = SENDING
         sent = await self._send(reply)
         try:
-            await self.pipeline.commit(self.chat_id, batch, sent)  # history gets only what was really sent
+            await self.pipeline.commit(self.chat_id, batch, sent, reply)  # history gets only what was really sent
         except Exception:
             log.exception("commit failed for chat %s", self.chat_id)
         self.stats.replies += 1
@@ -883,20 +1325,36 @@ class SessionManager:
     async def on_message(self, msg: Incoming) -> None:
         await self.get(msg.chat_id).on_message(msg)
 
+    def drop(self, chat_id: int) -> None:
+        """Forget a chat's in-memory state (buffer, timers, a running generation)."""
+        session = self.sessions.pop(chat_id, None)
+        if session:
+            for task in list(session._tasks):
+                task.cancel()
+
 
 class LlmPipeline:
     """The real pipeline (PLAN.md §5): retrieval → prompt → Haiku `reply` call → validators (retry once) → templates."""
 
     def __init__(self, settings: Settings, storage: Storage, transport: Transport, catalog: Catalog,
-                 templates: Templates, validator: Validator, llm: LLM):
+                 templates: Templates, validator: Validator, llm: LLM, orders: Orders, handoff: Handoff):
         self.settings, self.storage, self.transport = settings, storage, transport
         self.catalog, self.templates, self.validator, self.llm = catalog, templates, validator, llm
+        self.orders, self.handoff = orders, handoff
 
     async def is_human(self, chat_id: int) -> bool:
-        return await self.storage.get_mode(chat_id) == "HUMAN"
+        return await self.handoff.is_human(chat_id)
 
     async def relay_to_human(self, chat_id: int, batch: list[Incoming]) -> None:
-        log.info("chat %s is in HUMAN mode; relay arrives in Step 6", chat_id)
+        for m in batch:
+            await self.handoff.relay_client(chat_id, m.tg_id)
+        await self.storage.mark_answered([m.db_id for m in batch if m.db_id])
+
+    async def _orders(self, chat_id: int) -> tuple[dict | None, dict | None]:
+        """(editable order, latest order) as plain dicts."""
+        rows = await self.storage.pool.fetch("SELECT * FROM orders WHERE chat_id = $1 ORDER BY id DESC LIMIT 5", chat_id)
+        current = next((dict(r) for r in rows if r["status"] in EDITABLE), None)
+        return current, (dict(rows[0]) if rows else None)
 
     async def generate(self, chat_id: int, batch: list[Incoming]) -> Reply:
         hist = await self.storage.history(chat_id, limit=self.settings.history_turns * 2,
@@ -913,15 +1371,19 @@ class LlmPipeline:
         flags = {"first_contact": not any(r["role"] == "assistant" for r in hist),
                  "client_name": client["full_name"] if client else None}
 
+        current, latest = await self._orders(chat_id)
+        order_state = self.orders.prompt_state(current, latest)
+        state_json = order_state if isinstance(order_state, str) else json.dumps(order_state, ensure_ascii=False)
+
         allowed = (self.llm.reference_numbers | numbers_in(cards_json) | numbers_in(batch_text)
-                   | numbers_in("\n".join(r["text"] for r in hist)) | {"1"})
+                   | numbers_in("\n".join(r["text"] for r in hist)) | numbers_in(state_json) | {"1"})
         for s in slugs:  # base price + any single option is a total the model may state
             p = self.catalog.products[s]
             allowed |= {str(p["price"]["with_vat"] + o["price"]["with_vat"]) for o in p["options"]}
 
         messages = self._history_messages(hist) + [{"role": "user", "content": (
             f"<catalog_cards>\n{cards_json or 'none matched: rely on the catalog index, ask or say it is not in the catalog'}\n"
-            f"</catalog_cards>\n<order_state>none</order_state>\n"
+            f"</catalog_cards>\n<order_state>{state_json}</order_state>\n"
             f"<conversation_flags>{json.dumps(flags, ensure_ascii=False)}</conversation_flags>\n"
             f"{self._client_block(batch_text)}")}]
 
@@ -931,25 +1393,49 @@ class LlmPipeline:
             discussed = set(last) | self.catalog.named_in(batch_text)
             check = (self.validator.check(data, allowed, self.catalog.without_vat_numbers(slugs), discussed) if data
                      else Check(["no `reply` tool call"]))
+            plan = OrderPlan()
+            if not check.errors:  # order changes are checked like any other part of the reply
+                plan = self.orders.plan(current, latest, data["order_update"])
+                check.errors += [f"order_update: {e}" for e in plan.errors]
+                if not plan.errors:
+                    sent = [p["template_id"] for p in data["parts"]
+                            if p.get("kind") == "template" and p.get("template_id") in ORDER_TEMPLATES]
+                    missing = self.orders.missing(plan.data) if plan.data else None
+                    issues = order_template_issues(sent, plan, missing)
+                    if issues and attempt == 1:
+                        check.errors += issues
+                    elif issues:  # second attempt: correct it rather than fail (drop not-due, append due ones)
+                        log.warning("chat %s: order templates auto-corrected: %s", chat_id, issues)
+                    if not data["parts"] and not plan.parts:
+                        check.errors.append("parts is empty but nothing is due this turn (the order is not complete;"
+                                            f" missing: {missing}). Write the reply yourself.")
             await self.storage.log_llm_call(chat_id, self.settings.model, attempt, resp.usage, latency,
                                             "ok" if not check.errors else "invalid",
                                             {"errors": check.errors, "dropped": sorted(check.drop_parts),
                                              "cards": slugs, "intent": data and data.get("intent"),
                                              "parts": data.get("parts") if data and check.errors else None})
             if not check.errors:
-                return self._build(data, check)
+                return self._build(data, check, plan)
             log.warning("chat %s attempt %d rejected: %s", chat_id, attempt, check.errors)
             if attempt == 1 and call:
+                # The assistant turn goes back unchanged (thinking blocks included: newer models reject edited ones).
                 messages = messages + [
-                    {"role": "assistant", "content": [{"type": "tool_use", "id": call["id"], "name": "reply",
-                                                       "input": call["input"]}]},
+                    {"role": "assistant", "content": resp.content},
                     {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call["id"], "is_error": True,
                                                   "content": "Rejected, nothing was sent. Fix these problems and call "
                                                              "`reply` again:\n- " + "\n- ".join(check.errors)}]},
                 ]
+            elif attempt == 1 and resp.content and resp.stop_reason == "end_turn":
+                # tool_choice "auto" models can answer in plain text: ask once more for the tool call.
+                messages = messages + [
+                    {"role": "assistant", "content": resp.content},
+                    {"role": "user", "content": "Nothing was sent to the client. Answer by calling the `reply` tool."},
+                ]
         part = self.templates.text("fallback_handoff")
         part.meta = {"products": [], "escalate": {"needed": True, "reason": "validator_failed"}}
-        return Reply([part])
+        summary = f"Бот не зміг відповісти на: «{batch_text[:300]}»"
+        return Reply([part], {"escalate": {"needed": True, "reason": "validator_failed", "department": "sales",
+                                           "summary_uk": summary}, "model_text": True})
 
     def _client_block(self, text: str) -> str:
         safe = text.replace("<", "‹").replace(">", "›")  # the client can't close or forge our tags
@@ -974,26 +1460,45 @@ class LlmPipeline:
             msgs.pop(0)
         return msgs
 
-    def _build(self, data: dict, check: Check) -> Reply:
-        parts = []
+    def _build(self, data: dict, check: Check, plan: OrderPlan) -> Reply:
+        due = {p.template_id: p for p in plan.parts}  # order templates the order state makes due, values filled
+        parts, used = [], set()
         for i, part in enumerate(data["parts"]):
             if i in check.drop_parts:
                 continue
             if part["kind"] == "text":
                 text = part["text"].strip()
                 parts.append(RenderedPart("text", html.escape(text), history_text=text))
+            elif part["template_id"] in ORDER_TEMPLATES:
+                tid = part["template_id"]
+                if tid in due and tid not in used:  # where the model put it, with Python's values
+                    parts.append(due[tid])
+                    used.add(tid)
+                # not due (only possible after the second attempt): dropped, never sent
             else:
                 parts.append(self.templates.render(part))
-        if not parts:
-            parts = [self.templates.text("fallback_handoff")]
+        parts += [p for tid, p in due.items() if tid not in used]  # due but forgotten (second attempt): appended
         escalate = data["escalate"]
         if check.force_escalate:
             escalate = {**escalate, "needed": True, "reason": check.force_escalate}
+        free = lambda p: p.kind == "text" and p.template_id is None  # noqa: E731 - the model's own words
+        if plan.status in ("PAYMENT_SENT", "MANAGER_REVIEW"):
+            # A confirm turn: the order templates say everything; free text could promise the wrong outcome.
+            parts = [p for p in parts if not free(p)]
+        elif plan.status == "AWAITING_CONFIRMATION" and due:
+            # The summary goes out: drop model text that repeats it or is a bare courtesy line («Дякую!»),
+            # keep anything else it answered.
+            total = str(plan.data["totals"]["with_vat"])
+            parts = [p for p in parts if not free(p) or not (
+                total in numbers_in(p.history_text) or SUMMARY_TALK_RE.search(p.history_text)
+                or COURTESY_ONLY_RE.fullmatch(p.history_text.strip()))]
+        if not parts:  # validated against, but never send an empty reply
+            parts = [self.templates.text("fallback_handoff")]
         parts[0].meta = {"products": [s for s in data["products_referenced"] if s in self.catalog.products],
                          "intent": data["intent"], "escalate": escalate, "order_update": data["order_update"]}
-        if escalate.get("needed") or data["order_update"]["action"] != "none":
-            log.info("escalate/order (handled in Step 6): %s / %s", escalate, data["order_update"]["action"])
-        return Reply(parts)
+        model_text = any(p["kind"] == "text" for i, p in enumerate(data["parts"]) if i not in check.drop_parts)
+        has_dept = any(p.get("template_id") == "department_contact" for p in data["parts"])
+        return Reply(parts, {"plan": plan, "escalate": escalate, "model_text": model_text, "has_dept": has_dept})
 
     async def send_part(self, chat_id: int, part: RenderedPart) -> None:
         if part.kind == "photo":
@@ -1003,15 +1508,49 @@ class LlmPipeline:
         else:
             await self.transport.send_text(chat_id, part.text)
 
-    async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list[RenderedPart]) -> None:
+    async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list[RenderedPart], reply: Reply) -> None:
+        """After delivery: history, then the order write and any admin-group action (never for a cancelled reply)."""
         for part in sent_parts:
             await self.storage.save_message(chat_id, "assistant", part.history_text, meta=part.meta)
         await self.storage.mark_answered([m.db_id for m in batch if m.db_id])
 
+        plan: OrderPlan | None = reply.extra.get("plan")
+        if plan and plan.status:
+            if plan.order_id:
+                await self.storage.pool.execute(
+                    "UPDATE orders SET status = $2, data = $3, updated_at = now(),"
+                    " payment_sent_at = CASE WHEN $4 THEN coalesce(payment_sent_at, now()) ELSE payment_sent_at END"
+                    " WHERE id = $1", plan.order_id, plan.status, plan.data, plan.payment_sent)
+                order_id = plan.order_id
+            else:
+                order_id = await self.storage.pool.fetchval(
+                    "INSERT INTO orders (chat_id, status, data) VALUES ($1, $2, $3) RETURNING id",
+                    chat_id, plan.status, plan.data)
+            log.info("order %s → %s (chat %s)", order_id, plan.status, chat_id)
+            if plan.notify:
+                await self.handoff.notify_order(plan.notify, order_id, chat_id)
+            if plan.review_reason:
+                await self.handoff.open(chat_id, plan.review_reason, "sales",
+                                        f"Замовлення №{order_id} підтверджено, потрібне оформлення "
+                                        f"({REASON_UK[plan.review_reason]}).", human=True)
+
+        esc = reply.extra.get("escalate") or {}
+        if esc.get("needed"):
+            human = not reply.extra.get("has_dept")  # pure department routing: the bot keeps the conversation
+            await self.handoff.open(chat_id, esc.get("reason", "unknown_fact"), esc.get("department"),
+                                    esc.get("summary_uk"), human)
+            if human and not reply.extra.get("model_text"):  # the model said nothing itself: acknowledge
+                ack = self.templates.text("handoff_ack")
+                await self.send_part(chat_id, ack)
+                await self.storage.save_message(chat_id, "assistant", ack.history_text)
+
     async def on_error(self, chat_id: int, batch: list[Incoming], exc: Exception) -> None:
         part = self.templates.text("fallback_handoff")
         await self.send_part(chat_id, part)
-        await self.commit(chat_id, batch, [part])
+        text = " / ".join(m.text for m in batch)[:300]
+        await self.commit(chat_id, batch, [part], Reply([part], {"model_text": True, "escalate": {
+            "needed": True, "reason": "validator_failed", "department": "sales",
+            "summary_uk": f"Помилка бота ({type(exc).__name__}) на: «{text}»"}}))
 
 
 # ═══════════════════════════ 9. Telegram ═══════════════════════════
@@ -1024,6 +1563,7 @@ class Transport(Protocol):
     async def send_media_group(self, chat_id: int, file_ids: list[str], caption: str | None = None) -> list[int]: ...
     async def send_typing(self, chat_id: int) -> None: ...
     async def copy_message(self, to_chat_id: int, from_chat_id: int, message_id: int, reply_to: int | None = None) -> int: ...
+    async def edit_markup(self, chat_id: int, message_id: int, markup: Any) -> None: ...
 
 
 class BotTransport:
@@ -1064,6 +1604,12 @@ class BotTransport:
         m = await self._call(self.bot.copy_message, to_chat_id, from_chat_id, message_id, reply_to_message_id=reply_to)
         return m.message_id if m else 0
 
+    async def edit_markup(self, chat_id, message_id, markup) -> None:
+        try:
+            await self._call(self.bot.edit_message_reply_markup, chat_id=chat_id, message_id=message_id, reply_markup=markup)
+        except Exception:  # e.g. "message is not modified": cosmetic only
+            log.debug("edit_markup failed", exc_info=True)
+
 
 @dataclass
 class Runtime:
@@ -1074,6 +1620,7 @@ class Runtime:
     transport: Transport
     sessions: SessionManager
     templates: Templates
+    handoff: Handoff
 
     def allowed(self, user_id: int) -> bool:
         return not self.settings.allowed_user_ids or user_id in self.settings.allowed_user_ids
@@ -1089,11 +1636,23 @@ async def build_runtime(settings: Settings, bot: Bot) -> Runtime:
     catalog, content = Catalog.load(), Templates.load_content()
     templates = Templates(content, catalog, settings.persona_name)
     llm = LLM(settings, catalog, content, storage)
-    pipeline = LlmPipeline(settings, storage, transport, catalog, templates, Validator(catalog, content), llm)
+    orders = Orders(catalog, templates)
+    handoff = Handoff(settings, storage, transport, templates, orders)
+    pipeline = LlmPipeline(settings, storage, transport, catalog, templates, Validator(catalog, content), llm,
+                           orders, handoff)
     sessions = SessionManager(pipeline, transport, SessionConfig.from_settings(settings))
-    log.info("catalog %s: %d products, %d photos; model %s", catalog.version, len(catalog.products),
-             len(catalog.file_ids), settings.model)
-    return Runtime(settings, storage, transport, sessions, templates)
+    log.info("catalog %s: %d products, %d photos; model %s (%s); admin chat %s; %d tester(s)", catalog.version,
+             len(catalog.products), len(catalog.file_ids), settings.model, llm.params,
+             "set" if settings.admin_chat_id else "NOT SET", len(settings.tester_ids))
+    rt = Runtime(settings, storage, transport, sessions, templates, handoff)
+    handoff.on_resume = lambda chat_id: resume_chat(rt, chat_id)
+    return rt
+
+
+async def resume_chat(rt: Runtime, chat_id: int) -> None:
+    """Back in BOT mode: let the bot answer whatever the client wrote after the last bot/manager message."""
+    for r in await rt.handoff.trailing_client_messages(chat_id):
+        await rt.sessions.on_message(Incoming(chat_id, r["text"], r["id"], r["tg_message_id"] or 0))
 
 
 async def reschedule_unanswered(rt: Runtime) -> None:
@@ -1128,6 +1687,19 @@ async def on_start(message: Message, event_update: Update, rt: Runtime) -> None:
             await rt.storage.save_message(message.chat.id, "assistant", part.history_text)
 
 
+@router.message(F.chat.type == "private", Command("clear"))
+async def on_clear(message: Message, event_update: Update, rt: Runtime) -> None:
+    """Testers only: wipe the bot's memory of this chat. For anyone else /clear is an ordinary message."""
+    if message.from_user.id not in rt.settings.tester_ids:
+        raise SkipHandler()  # checked before dedup, so the text handler still gets this update
+    if not await _accept(message, event_update, rt):
+        return
+    rt.sessions.drop(message.chat.id)
+    await rt.storage.wipe_chat(message.chat.id)
+    await rt.transport.send_text(message.chat.id, "🧹 Пам'ять бота для цього чату очищено: повідомлення, замовлення "
+                                                  "й запити до менеджера. Напишіть /start, щоб почати заново.")
+
+
 @router.message(F.chat.type == "private", F.text)
 async def on_private_text(message: Message, event_update: Update, rt: Runtime) -> None:
     if not await _accept(message, event_update, rt):
@@ -1138,9 +1710,40 @@ async def on_private_text(message: Message, event_update: Update, rt: Runtime) -
 
 @router.message(F.chat.type == "private")
 async def on_private_other(message: Message, event_update: Update, rt: Runtime) -> None:
-    """Photos, voice, stickers…: the bot reads text only."""
-    if await _accept(message, event_update, rt):
+    """Photos, voice, stickers…: relayed to the manager in HUMAN mode, otherwise the bot reads text only."""
+    if not await _accept(message, event_update, rt):
+        return
+    if await rt.handoff.is_human(message.chat.id):
+        await rt.handoff.relay_client(message.chat.id, message.message_id)
+    else:
         await rt.transport.send_text(message.chat.id, rt.templates.text("unsupported_media").text)
+
+
+# ── admin group (ADMIN_CHAT_ID): handoff buttons, manager replies, commands ──
+
+@router.callback_query(F.data.startswith("ho:"))
+async def on_handoff_button(cb: CallbackQuery, rt: Runtime) -> None:
+    if not cb.message or cb.message.chat.id != rt.settings.admin_chat_id:
+        await cb.answer()
+        return
+    _, action, hid = cb.data.split(":")
+    await cb.answer(await rt.handoff.button(int(hid), action, cb.from_user.full_name))
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}))
+async def on_admin_message(message: Message, event_update: Update, rt: Runtime) -> None:
+    if message.chat.id != rt.settings.admin_chat_id or not await rt.storage.first_seen(event_update.update_id):
+        return
+    text = message.text or message.caption or ""
+    if text.startswith("/"):
+        await rt.transport.send_text(message.chat.id, await rt.handoff.command(text), reply_to=message.message_id)
+    elif message.reply_to_message:  # a reply to a card or a relayed client message goes to that client
+        chat_id = await rt.handoff.manager_reply(message.reply_to_message.message_id, message.message_id,
+                                                 text or "[медіа від менеджера]")
+        if chat_id is None:  # say so instead of silently dropping the manager's answer
+            await rt.transport.send_text(message.chat.id, "⚠️ Не знаю, якому клієнту це надіслати. Відповідайте "
+                                         "реплаєм на картку запиту або на переслане повідомлення клієнта.",
+                                         reply_to=message.message_id)
 
 
 def build_dispatcher() -> Dispatcher:

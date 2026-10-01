@@ -10,8 +10,10 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeClock, FakePipeline, FakeTransport
 
-from main import (IDLE, SENDING, Catalog, Incoming, SessionConfig, SessionManager, Storage, Templates, Validator,
-                  build_system, clean_site_text, reference_numbers)
+from config import Settings
+from main import (IDLE, LLM, SENDING, Catalog, Check, Handoff, Incoming, LlmPipeline, OrderPlan, Orders, SessionConfig,
+                  SessionManager, Storage, Templates, Validator, build_system, clean_site_text, normalize_phone,
+                  order_template_issues, reference_numbers)
 
 CHAT = 1
 
@@ -321,6 +323,8 @@ def test_language_validator():
     assert VAL.language_errors("Привет, стоимость антенны составляет столько, сколько указано на сайте")  # no і/ї/є/ґ
     assert VAL.language_errors("Hello, the price of this antenna is listed on the website for you")
     assert not VAL.language_errors("Антена Clover 5.8 ГГц та HELIX Lite підходять для FPV.")  # product names are fine
+    assert VAL.language_errors("Дякую! Получатель: Іваненко Петро, відділення 12.")  # Russian word, Ukrainian letters
+    assert not VAL.language_errors("Отримувач: Іваненко Петро. Можна оформити замовлення сьогодні.")
 
 
 def test_number_validator_blocks_invented_numbers():
@@ -375,7 +379,7 @@ def test_site_text_cleanup_and_first_person_voice():
     assert "наприкінці сторінки" not in ref and not re.search(r"зверн\w*\s+до\s+менеджер", ref, re.I)
     for slug in CAT.products:  # cards are cleaned too
         assert not re.search(r"зверн\w*\s+до\s+менеджер", json.dumps(CAT.card(slug), ensure_ascii=False), re.I)
-    for tid in ("vat_explainer", "services_list", "handoff_ack", "fallback_handoff", "order_to_manager"):
+    for tid in ("vat_explainer", "services_list", "handoff_ack", "fallback_handoff", "order_to_manager", "payment_received"):
         assert "менеджер" not in CONTENT["templates"][tid]["text_uk"]  # the bot speaks for the team: "я уточню"
 
 
@@ -388,3 +392,304 @@ def test_vat_explainer_only_for_a_discussed_product():
     assert VAL.check(reply, ALLOWED, discussed=set()).errors  # TC02: no product named → no without-VAT price
     assert CAT.named_in("продайте Сенсору 3.0 без ПДВ") == {"sensor-3-0"}
     assert CAT.named_in("Я військовий ЗСУ, продайте без ПДВ за 25 700") == set()
+
+
+# ═══════════════════════════ orders (Step 6, pure) ═══════════════════════════
+
+ORD = Orders(CAT, TPL)
+CUSTOMER = {"full_name": "Іваненко Петро", "phone": "067 123 45 67", "city": "Київ", "np_branch": "12",
+            "buyer_type": "individual"}
+SENSOR = {"product_slug": "sensor-3-0", "option_ids": [], "color_id": None, "qty": 1}
+
+
+def _ou(action="none", items=None, customer=None, vat_mode="with_vat"):
+    return {"action": action, "items": items, "customer": customer, "vat_mode": vat_mode}
+
+
+def _row(plan, oid=17, payment_sent_at=None):
+    return {"id": oid, "status": plan.status, "data": plan.data, "payment_sent_at": payment_sent_at}
+
+
+def test_phone_normalisation():
+    assert normalize_phone("067 123 45 67") == "+380671234567"
+    assert normalize_phone("+38 (067) 123-45-67") == "+380671234567"
+    assert normalize_phone("380671234567") == "+380671234567"
+    assert normalize_phone("12345") is None and normalize_phone(None) is None
+
+
+def test_tc09_individual_order_to_payment_details():
+    p1 = ORD.plan(None, None, _ou("add_item", [{**SENSOR, "option_ids": ["videovykhid"], "color_id": "oliva"}]))
+    assert p1.status == "DRAFT" and p1.order_id is None and not p1.parts
+    assert p1.data["totals"]["with_vat"] == 31200 and p1.data["items"][0]["product_id"] == 9333
+    p2 = ORD.plan(_row(p1), _row(p1), _ou("set_customer", customer=CUSTOMER))
+    assert p2.status == "AWAITING_CONFIRMATION" and p2.data["customer"]["phone"] == "+380671234567"
+    summary = p2.parts[0].text
+    assert "31 200 грн з ПДВ" in summary and "колір «олива»" in summary and "Відеовихід" in summary
+    assert "Іваненко Петро, +380671234567" in summary and "відділення 12" in summary
+    p3 = ORD.plan(_row(p2), _row(p2), _ou("confirm"))
+    assert p3.status == "PAYMENT_SENT" and p3.payment_sent and p3.notify == "payment_sent"
+    assert "Замовлення №17 підтверджено" in p3.parts[0].text
+    assert "Оплата : 31 200 грн" in p3.parts[1].text and "UA000000000000000000000000000" in p3.parts[1].text
+    again = ORD.plan(_row(p2, payment_sent_at="2026-10-01"), None, _ou("confirm"))
+    assert len(again.parts) == 1  # payment details at most once per order
+
+
+def test_confirm_needs_a_summary_first():
+    p1 = ORD.plan(None, None, _ou("add_item", [SENSOR]))
+    assert ORD.plan(_row(p1), _row(p1), _ou("confirm")).status is None  # DRAFT: confirm ignored
+
+
+def test_tc10_company_order_goes_to_review_without_payment():
+    p1 = ORD.plan(None, None, _ou("add_item", [{**SENSOR, "product_slug": "sensor-4-0", "qty": 3}],
+                                  customer={**CUSTOMER, "buyer_type": "legal_entity"}))
+    assert p1.status == "AWAITING_CONFIRMATION" and "181 440 грн з ПДВ" in p1.parts[0].text
+    p2 = ORD.plan(_row(p1), _row(p1), _ou("confirm"))
+    assert p2.status == "MANAGER_REVIEW" and p2.review_reason == "legal_entity" and not p2.payment_sent
+    assert "на компанію" in p2.parts[0].text and not any("UA14" in x.text for x in p2.parts)
+
+
+def test_without_vat_request_goes_to_review():
+    p1 = ORD.plan(None, None, _ou("add_item", [SENSOR], customer=CUSTOMER, vat_mode="without_vat_requested"))
+    p2 = ORD.plan(_row(p1), _row(p1), _ou("confirm"))
+    assert p2.status == "MANAGER_REVIEW" and p2.review_reason == "vat_eligibility"
+
+
+def test_edit_after_summary_sends_a_new_summary():
+    p1 = ORD.plan(None, None, _ou("add_item", [SENSOR], customer=CUSTOMER))
+    assert ORD.plan(_row(p1), _row(p1), _ou("set_customer", customer=CUSTOMER)).status is None  # unchanged: no repeat
+    p2 = ORD.plan(_row(p1), _row(p1), _ou("add_item", [{**SENSOR, "qty": 2}]))
+    assert p2.status == "AWAITING_CONFIRMATION" and p2.data["summary_hash"] != p1.data["summary_hash"]
+    assert p2.data["items"][0]["qty"] == 2 and len(p2.data["items"]) == 1  # restating a line sets its quantity
+    p3 = ORD.plan(_row(p1), _row(p1), _ou("set_customer", customer={"full_name": None, "phone": None, "city": "Львів",
+                                                                     "np_branch": None, "buyer_type": "unknown"}))
+    assert "Львів" in p3.parts[0].text
+
+
+def test_order_validation_errors_are_reported():
+    assert ORD.plan(None, None, _ou("add_item", [{**SENSOR, "color_id": "rozhevyi"}])).errors
+    assert ORD.plan(None, None, _ou("add_item", [{**SENSOR, "option_ids": ["laser"]}])).errors
+    p1 = ORD.plan(None, None, _ou("add_item", [SENSOR]))
+    assert ORD.plan(_row(p1), _row(p1), _ou("set_customer", customer={**CUSTOMER, "phone": "12345"})).errors
+
+
+def test_cancel():
+    p1 = ORD.plan(None, None, _ou("add_item", [SENSOR]))
+    c = ORD.plan(_row(p1), _row(p1), _ou("cancel"))
+    assert c.status == "CANCELLED" and "№17 скасовано" in c.parts[0].text and c.notify == "cancelled"
+    assert ORD.plan(None, {"id": 3, "status": "PAID", "data": p1.data}, _ou("cancel")).status is None
+
+
+# ═══════════════════════════ handoff (Step 6, test DB) ═══════════════════════════
+
+ADMIN = -100500
+
+
+@pytest.mark.db
+async def test_handoff_card_relay_buttons_and_expiry(storage):
+    tr = FakeTransport()
+    ho = Handoff(SimpleNamespace(admin_chat_id=ADMIN), storage, tr, TPL, ORD)
+    await storage.upsert_client(42, 42, "petro", "Петро")
+    await storage.save_message(42, "user", "Покличте менеджера", 7, answered=False)
+
+    await ho.open(42, "client_request", "sales", "Клієнт просить менеджера", human=True)
+    card = tr.of("text")[-1]
+    assert card[1] == ADMIN and "Запит #" in card[2] and "Покличте менеджера" in card[2] and card[3] is not None
+    assert await ho.is_human(42)
+    card_id = await storage.pool.fetchval("SELECT card_message_id FROM handoffs WHERE chat_id = 42")
+
+    await ho.open(42, "unknown_fact", "sales", "Ще питання", human=True)  # a second request extends the same card
+    assert "Ще запит" in tr.of("text")[-1][2] and tr.of("text")[-1][4] == card_id
+    assert await storage.pool.fetchval("SELECT count(*) FROM handoffs WHERE chat_id = 42") == 1
+
+    await ho.relay_client(42, 8)  # the client's message is copied under the card
+    assert tr.of("copy")[-1] == ("copy", ADMIN, 42, 8, card_id)
+    assert await ho.manager_reply(card_id, 555, "Добрий день, це Олег") == 42
+    assert tr.of("copy")[-1] == ("copy", 42, ADMIN, 555, None)
+    assert (await storage.history(42))[-1]["role"] == "manager"
+    assert await ho.manager_reply(999999, 556, "?") is None  # unmapped: ignored
+
+    hid = await storage.pool.fetchval("SELECT id FROM handoffs WHERE chat_id = 42")
+    assert "Бот знову" in await ho.button(hid, "bot", "Олег")
+    assert not await ho.is_human(42) and tr.of("edit_markup")[-1][2] == card_id
+
+    await storage.set_mode(42, "HUMAN")  # 12 h without manager activity → back to the bot on the next message
+    await storage.pool.execute("UPDATE clients SET mode_changed_at = now() - interval '13 hours',"
+                               " last_manager_at = now() - interval '13 hours' WHERE chat_id = 42")
+    assert not await ho.is_human(42)
+
+
+@pytest.mark.db
+async def test_admin_commands(storage):
+    tr = FakeTransport()
+    ho = Handoff(SimpleNamespace(admin_chat_id=ADMIN), storage, tr, TPL, ORD)
+    await storage.upsert_client(43, 43, None, "Олена")
+    oid = await storage.pool.fetchval(
+        "INSERT INTO orders (chat_id, status, data) VALUES (43, 'PAYMENT_SENT', $1) RETURNING id",
+        {"items": [], "totals": {"with_vat": 31200}, "customer": {}, "vat_mode": "with_vat"})
+    assert "№" in await ho.command("/orders")
+    assert "✅" in await ho.command(f"/paid@SampleShopBot {oid}")
+    assert await storage.pool.fetchval("SELECT status FROM orders WHERE id = $1", oid) == "PAID"
+    assert tr.of("text")[-1][1] == 43 and "Оплату отримано" in tr.of("text")[-1][2]
+    assert "уже PAID" in await ho.command(f"/cancel {oid}")
+    assert "Формат" in await ho.command("/paid abc")
+
+
+# ═══════════════════════════ owner feedback round 2: models, empty parts, resume, /clear ═══════════════════════════
+
+def _llm(model, thinking="adaptive"):
+    s = Settings(_env_file=None, telegram_bot_token="1:x", webhook_secret="x", anthropic_api_key="test",
+                 model=model, llm_thinking=thinking)
+    return LLM(s, CAT, CONTENT, None)
+
+
+def test_request_shape_per_model():
+    haiku = _llm("claude-haiku-4-5").request([])
+    assert haiku["tool_choice"] == {"type": "tool", "name": "reply"} and haiku["extra_body"] == {"temperature": 0.2}
+    assert "thinking" not in haiku and "output_config" not in haiku and haiku["max_tokens"] == 1200
+    s55 = _llm("claude-sonnet-5-5").request([])  # docs: no forced tool use, no "disabled", no temperature
+    assert s55["tool_choice"] == {"type": "auto"} and s55["thinking"] == {"type": "adaptive"}
+    assert s55["output_config"] == {"effort": "low"} and s55["max_tokens"] == 4000 and "extra_body" not in s55
+    assert _llm("claude-sonnet-5-5", "between_tools").request([])["thinking"] == {"type": "between_tools"}
+    s5 = _llm("claude-sonnet-5").request([])
+    assert s5["tool_choice"]["type"] == "tool" and s5["thinking"] == {"type": "disabled"}
+    o55 = _llm("claude-opus-5-5").request([])
+    assert o55["tool_choice"] == {"type": "auto"} and "thinking" not in o55 and o55["output_config"] == {"effort": "low"}
+
+
+async def test_rejected_params_fall_back_to_safe_ones():
+    class FakeBadRequest(Exception):
+        pass
+
+    llm = _llm("claude-sonnet-5-5")
+    llm.anthropic = SimpleNamespace(BadRequestError=FakeBadRequest)
+    seen = []
+
+    async def create(**req):
+        seen.append(req)
+        if len(seen) == 1:
+            raise FakeBadRequest("thinking: unsupported value")
+        return SimpleNamespace(content=[SimpleNamespace(type="tool_use", name="reply", id="t1", input={"parts": []})],
+                               stop_reason="tool_use", usage=SimpleNamespace(input_tokens=1, output_tokens=1,
+                               cache_read_input_tokens=0, cache_creation_input_tokens=0))
+
+    llm.client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    _, call, _ = await llm.call(1, [], 1)
+    assert call["id"] == "t1" and "thinking" not in seen[1] and seen[1]["tool_choice"] == {"type": "auto"}
+
+
+def test_empty_parts_only_on_order_turns():
+    empty = _reply()
+    empty["parts"] = []
+    assert VAL.check(empty, ALLOWED).errors
+    empty["order_update"]["action"] = "confirm"
+    assert not VAL.check(empty, ALLOWED).errors
+
+
+async def test_session_drop_cancels_its_tasks():
+    clock, _, pl, sm = setup()
+    await say(sm, "q", 1)
+    sm.drop(CHAT)
+    await clock.advance(30)
+    assert pl.calls == [] and CHAT not in sm.sessions
+
+
+@pytest.mark.db
+async def test_resume_mapping_and_wipe(storage):
+    tr = FakeTransport()
+    ho = Handoff(SimpleNamespace(admin_chat_id=ADMIN), storage, tr, TPL, ORD)
+    resumed = []
+
+    async def on_resume(chat_id):
+        resumed.append((chat_id, [r["text"] for r in await ho.trailing_client_messages(chat_id)]))
+
+    ho.on_resume = on_resume
+    await storage.upsert_client(44, 44, None, "Роман")
+    await storage.save_message(44, "user", "покличте менеджера", 1, answered=False)
+    await ho.open(44, "client_request", "sales", "Клієнт просить менеджера", human=True)
+    hid = await storage.pool.fetchval("SELECT id FROM handoffs WHERE chat_id = 44")
+    await ho.button(hid, "take", "Роман")
+    take_notice = await storage.pool.fetchval(
+        "SELECT max(admin_message_id) FROM relay_map WHERE chat_id = 44")  # the "✋ взяв" notice is mapped too
+    assert await ho.manager_reply(take_notice, 777, "Вітаю, з вами Сергій") == 44
+    await storage.save_message(44, "user", "Можете підсказати, як проходить оплата на ФОП?", 2, answered=True)
+    await ho.button(hid, "bot", "Роман")
+    assert resumed == [(44, ["Можете підсказати, як проходить оплата на ФОП?"])]  # answered after the hand-back
+
+    await ho.notify_order("payment_sent", 1, 44)  # replies to order notifications reach the client as well
+    note = tr.of("text")[-1]
+    assert await storage.pool.fetchval("SELECT chat_id FROM relay_map WHERE admin_message_id = $1",
+                                       await storage.pool.fetchval("SELECT max(admin_message_id) FROM relay_map")) == 44
+    assert note[1] == ADMIN
+
+    await storage.wipe_chat(44)
+    for table in ("messages", "orders", "handoffs", "relay_map"):
+        assert await storage.pool.fetchval(f"SELECT count(*) FROM {table} WHERE chat_id = 44") == 0
+    assert await storage.get_mode(44) == "BOT"
+
+
+# ═══════════════════════════ round 3: model-chosen order templates, CACHE_TTL ═══════════════════════════
+
+def _tpl_part(tid):
+    return {"kind": "template", "text": None, "template_id": tid, "product_slug": None, "color_id": None,
+            "department": None, "items": None}
+
+
+def _summary_plan():
+    p1 = ORD.plan(None, None, _ou("add_item", [SENSOR]))
+    return ORD.plan(_row(p1), _row(p1), _ou("set_customer", customer=CUSTOMER))
+
+
+def _confirm_plan(buyer="individual"):
+    p = ORD.plan(None, None, _ou("add_item", [SENSOR], customer={**CUSTOMER, "buyer_type": buyer}))
+    return ORD.plan(_row(p), _row(p), _ou("confirm"))
+
+
+def test_order_templates_due_per_turn():
+    assert [p.template_id for p in _summary_plan().parts] == ["order_summary"]
+    assert [p.template_id for p in _confirm_plan().parts] == ["order_confirmed", "payment_details"]
+    assert [p.template_id for p in _confirm_plan("legal_entity").parts] == ["order_to_manager"]
+    assert not order_template_issues(["order_summary"], _summary_plan())
+    assert order_template_issues([], _summary_plan())  # due but missing
+    assert order_template_issues(["order_summary", "payment_details"], _summary_plan())  # not due yet
+    assert order_template_issues(["order_confirmed", "payment_details"], _confirm_plan("legal_entity"))  # company
+    assert order_template_issues(["order_summary", "order_summary"], _summary_plan())  # twice
+    assert "still misses" in order_template_issues(["order_summary"], OrderPlan(), ["phone"])[0]
+    assert not VAL.check({**_reply(), "parts": [_tpl_part("payment_details")]}, ALLOWED).errors  # checked later
+
+
+def _pipeline():
+    return LlmPipeline(None, None, None, CAT, TPL, VAL, None, ORD, None)
+
+
+def _build(parts, plan):
+    return _pipeline()._build({**_reply(), "parts": parts}, Check(), plan).parts
+
+
+def test_build_uses_the_model_order_and_python_values():
+    summary = _build([_reply("Дякую!")["parts"][0], _tpl_part("order_summary")], _summary_plan())
+    assert [p.template_id for p in summary] == ["order_summary"]  # the bare «Дякую!» is dropped
+    assert summary[0].text.startswith("Перевірте, будь ласка, замовлення")
+    keep = _build([_tpl_part("order_summary"), _reply("Гарантія — 12 місяців.")["parts"][0]], _summary_plan())
+    assert [p.template_id for p in keep] == ["order_summary", None]  # a real answer stays, in the model's order
+    confirm = _build([_reply("Реквізити надійдуть автоматично")["parts"][0], _tpl_part("order_confirmed"),
+                      _tpl_part("payment_details")], _confirm_plan())
+    assert [p.template_id for p in confirm] == ["order_confirmed", "payment_details"]  # free text dropped
+    assert "Оплата : 30 840 грн" in confirm[1].text
+
+
+def test_build_corrects_order_templates_on_the_second_attempt():
+    fixed = _build([_tpl_part("payment_details")], _summary_plan())  # not due → dropped; due summary → appended
+    assert [p.template_id for p in fixed] == ["order_summary"]
+    company = _build([_tpl_part("order_confirmed"), _tpl_part("payment_details")], _confirm_plan("legal_entity"))
+    assert [p.template_id for p in company] == ["order_to_manager"]  # never payment details for a company
+    empty = _build([], _summary_plan())  # regression: no fallback text in front of the summary
+    assert [p.template_id for p in empty] == ["order_summary"]
+
+
+def test_cache_ttl_setting():
+    one_hour = build_system(SimpleNamespace(persona_name="Микола", cache_ttl="1h"), CAT, CONTENT)[1]["cache_control"]
+    assert one_hour == {"type": "ephemeral", "ttl": "1h"}
+    assert build_system(SimpleNamespace(persona_name="Микола", cache_ttl="5m"), CAT, CONTENT)[1]["cache_control"] == {
+        "type": "ephemeral"}
+    with pytest.raises(Exception):
+        Settings(_env_file=None, telegram_bot_token="1:x", webhook_secret="x", cache_ttl="10m")

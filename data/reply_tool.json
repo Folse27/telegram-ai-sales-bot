@@ -9,7 +9,7 @@
     "properties": {
       "parts": {
         "type": "array",
-        "description": "1 to 3 messages sent in this order. Text parts: plain Ukrainian text, max 700 characters, no markdown.",
+        "description": "1 to 3 messages sent in this order. Text parts: plain Ukrainian text, max 700 characters, no markdown. Order templates (order_summary, order_confirmed, payment_details, order_to_manager, order_cancelled) take no parameters: Python fills every value and checks that they are due.",
         "items": {
           "type": "object",
           "additionalProperties": false,
@@ -19,7 +19,7 @@
             "text": {"type": ["string", "null"], "description": "Required when kind=text, else null."},
             "template_id": {
               "anyOf": [
-                {"type": "string", "enum": ["product_card", "product_photos", "product_color", "price_quote", "vat_explainer", "department_contact", "services_list"]},
+                {"type": "string", "enum": ["product_card", "product_photos", "product_color", "price_quote", "vat_explainer", "department_contact", "services_list", "order_summary", "order_confirmed", "payment_details", "order_to_manager", "order_cancelled"]},
                 {"type": "null"}
               ],
               "description": "Required when kind=template, else null."
