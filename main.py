@@ -496,6 +496,7 @@ RUSSIAN_WORDS_RE = re.compile(  # Russian-only words without ы/э/ъ/ё (Haiku 
     r"\b(получател\w*|сколько|стоит|стоимост\w*|наличи[еи]|спасибо|пожалуйста|здравствуйте|можно|нужно|конечно|"
     r"сейчас|только|когда|хорошо|если|пока что)\b", re.I)
 SUMMARY_TALK_RE = re.compile(r"перевір|отримувач|получат|разом", re.I)
+PROMISE_RE = re.compile(r"уточн\w*|підключаю колегу|напише вам тут|напишу вам тут|прийнято", re.I)
 COURTESY_ONLY_RE = re.compile(r"(дякую|дякуємо|чудово|добре|відмінно|супер|звісно)[\s!.,]*(\S{0,12}[!.]*)?", re.I)
 IDENTITY_OK_RE = re.compile(r"бот|штучн|ШІ", re.I)
 HUMAN_CLAIM_RE = re.compile(r"\bя\s+(жива\s+)?людина\b", re.I)
@@ -1539,7 +1540,8 @@ class LlmPipeline:
             human = not reply.extra.get("has_dept")  # pure department routing: the bot keeps the conversation
             await self.handoff.open(chat_id, esc.get("reason", "unknown_fact"), esc.get("department"),
                                     esc.get("summary_uk"), human)
-            if human and not reply.extra.get("model_text"):  # the model said nothing itself: acknowledge
+            promised = any(PROMISE_RE.search(p.history_text) for p in sent_parts)  # e.g. vat_explainer's «я уточню»
+            if human and not promised:  # nothing sent tells the client someone follows up: acknowledge once
                 ack = self.templates.text("handoff_ack")
                 await self.send_part(chat_id, ack)
                 await self.storage.save_message(chat_id, "assistant", ack.history_text)

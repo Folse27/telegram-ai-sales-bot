@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeClock, FakePipeline, FakeTransport
 
+import main
 from config import Settings
 from main import (IDLE, LLM, SENDING, Catalog, Check, Handoff, Incoming, LlmPipeline, OrderPlan, Orders, SessionConfig,
                   SessionManager, Storage, Templates, Validator, build_system, clean_site_text, normalize_phone,
@@ -693,3 +694,19 @@ def test_cache_ttl_setting():
         "type": "ephemeral"}
     with pytest.raises(Exception):
         Settings(_env_file=None, telegram_bot_token="1:x", webhook_secret="x", cache_ttl="10m")
+
+
+@pytest.mark.db
+async def test_handoff_ack_only_when_nothing_promised_a_follow_up(storage):
+    tr = FakeTransport()
+    ho = Handoff(SimpleNamespace(admin_chat_id=ADMIN), storage, tr, TPL, ORD)
+    pl = LlmPipeline(None, storage, tr, CAT, TPL, VAL, None, ORD, ho)
+    esc = {"needed": True, "reason": "vat_eligibility", "department": "sales", "summary_uk": "без ПДВ"}
+    for chat in (45, 46):
+        await storage.upsert_client(chat, chat, None, "Тест")
+    vat = TPL.render({"template_id": "vat_explainer", "product_slug": "sensor-3-0"})  # ends with «я уточню…»
+    await pl.commit(45, [], [vat], main.Reply([vat], {"escalate": esc}))
+    assert not [c for c in tr.of("text") if c[1] == 45]  # no second promise to the client
+    card = TPL.render({"template_id": "product_card", "product_slug": "sensor-3-0"})  # no promise in it
+    await pl.commit(46, [], [card], main.Reply([card], {"escalate": esc}))
+    assert [c[2] for c in tr.of("text") if c[1] == 46] == [TPL.text("handoff_ack").text]
