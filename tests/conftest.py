@@ -94,6 +94,7 @@ class FakePipeline:
         self.sent: list[tuple[float, str]] = []
         self.committed: list[tuple[list[str], list[str]]] = []
         self.relayed: list[str] = []
+        self.extras: list[dict] = []  # reply.extra per commit (e.g. first_part_after_s)
         self.errors: list[list[str]] = []
         self.fail_next = False
 
@@ -118,6 +119,7 @@ class FakePipeline:
 
     async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list, reply: Reply) -> None:
         self.committed.append(([m.text for m in batch], list(sent_parts)))
+        self.extras.append(dict(reply.extra))
 
     async def on_error(self, chat_id: int, batch: list[Incoming], exc: Exception) -> None:
         self.errors.append([m.text for m in batch])

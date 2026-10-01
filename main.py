@@ -918,6 +918,19 @@ REASON_UK = {
 HUMAN_EXPIRES_SQL = "interval '12 hours'"
 
 
+PRICES_PER_MTOK = {"claude-haiku-4-5": (1.0, 5.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-sonnet-5": (2.0, 10.0),
+                   "claude-opus-5-5": (4.0, 20.0)}  # input, output (USD); cache read = 0.1× input
+
+
+def llm_call_cost(row: Any, cache_ttl: str = "1h") -> float:
+    """Approximate USD cost of one llm_calls row (cache write 2× input for 1h, 1.25× for 5m)."""
+    model = next((m for m in PRICES_PER_MTOK if (row["model"] or "").startswith(m)), None)
+    p_in, p_out = PRICES_PER_MTOK.get(model, (2.0, 10.0))
+    write = p_in * (2.0 if cache_ttl == "1h" else 1.25)
+    return ((row["input_tokens"] or 0) * p_in + (row["output_tokens"] or 0) * p_out
+            + (row["cache_read_tokens"] or 0) * p_in * 0.1 + (row["cache_write_tokens"] or 0) * write) / 1e6
+
+
 def handoff_keyboard(handoff_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✋ Взяти", callback_data=f"ho:take:{handoff_id}"),
@@ -1071,12 +1084,14 @@ class Handoff:
     async def command(self, text: str) -> str:
         parts = text.split()
         cmd, arg = parts[0].split("@")[0].lower(), (parts[1] if len(parts) > 1 else "")
+        if cmd == "/stats":
+            return await self.stats(int(arg) if arg.isdigit() else 24)
         if cmd == "/orders":
             rows = await self.storage.pool.fetch("SELECT * FROM orders ORDER BY id DESC LIMIT 10")
             return "\n".join(f"№{r['id']} · {r['status']} · {fmt_uah(r['data']['totals']['with_vat'])} грн · чат "
                              f"<code>{r['chat_id']}</code>" for r in rows) or "Замовлень ще немає."
         if not arg.isdigit():
-            return "Формат: /paid 17 · /cancel 17 · /bot 123456789 · /orders"
+            return "Формат: /paid 17 · /cancel 17 · /bot 123456789 · /orders · /stats [годин]"
         if cmd == "/bot":
             await self.return_to_bot(int(arg), "returned", resume=True)
             return f"🤖 Чат {arg}: бот знову відповідає."
@@ -1095,7 +1110,37 @@ class Handoff:
             await self._set_order(order, "CANCELLED")
             await self._tell_client(order["chat_id"], self.templates.text("order_cancelled", order_id=order["id"]))
             return f"❌ №{arg} скасовано, клієнта повідомлено."
-        return "Невідома команда. Доступні: /paid, /cancel, /bot, /orders"
+        return "Невідома команда. Доступні: /paid, /cancel, /bot, /orders, /stats"
+
+    async def stats(self, hours: int = 24) -> str:
+        """/stats [hours]: the PLAN §10 cost and latency check on live traffic (0 = all time)."""
+        since = "($1 = 0 OR created_at > now() - make_interval(hours => $1))"
+        calls = await self.storage.pool.fetch(f"SELECT * FROM llm_calls WHERE {since}", hours)
+        lat = sorted(float(r["meta"]["first_part_after_s"]) for r in await self.storage.pool.fetch(
+            f"SELECT meta FROM messages WHERE role = 'assistant' AND meta ? 'first_part_after_s' AND {since}",
+            hours))
+        orders = await self.storage.pool.fetch(
+            f"SELECT status, count(*) n FROM orders WHERE {since} GROUP BY status ORDER BY status", hours)
+        open_h = await self.storage.pool.fetchval("SELECT count(*) FROM handoffs WHERE status IN ('open', 'taken')")
+        ok = [r for r in calls if r["status"] == "ok"]
+        usd = sum(llm_call_cost(r, getattr(self.settings, "cache_ttl", "1h")) for r in calls)
+        reads = sum(r["cache_read_tokens"] or 0 for r in calls)
+        cached_in = reads + sum((r["cache_write_tokens"] or 0) + (r["input_tokens"] or 0) for r in calls)
+        pct = lambda xs, q: xs[min(len(xs) - 1, int(q * len(xs)))] if xs else None  # noqa: E731
+        llm_ms = sorted(r["latency_ms"] for r in ok if r["latency_ms"])
+        period = f"за {hours} год" if hours else "за весь час"
+        lines = [
+            f"📊 <b>Статистика {period}</b>",
+            f"Відповідей: {len(ok)} · спроб відхилено валідатором: {len(calls) - len(ok)}",
+            f"Вартість LLM ≈ ${usd:.2f}" + (f" (≈ ${usd / len(ok):.3f} за відповідь)" if ok else ""),
+            f"Кеш: прочитано {reads / cached_in:.0%} вхідних токенів" if cached_in else "Кеш: даних ще немає",
+            f"LLM: p50 {pct(llm_ms, .5) / 1000:.1f} с · p90 {pct(llm_ms, .9) / 1000:.1f} с" if llm_ms else "LLM: даних ще немає",
+            (f"Від останнього повідомлення клієнта до першої відповіді: p50 {pct(lat, .5):.1f} с · p90 {pct(lat, .9):.1f} с"
+             f" ({len(lat)} відп.)" if lat else "Час до першої відповіді: даних ще немає"),
+            "Замовлення: " + (", ".join(f"{r['status']} {r['n']}" for r in orders) or "немає"),
+            f"Відкритих запитів до менеджера: {open_h}",
+        ]
+        return "\n".join(lines)
 
     async def _set_order(self, order: Any, status: str) -> None:
         await self.storage.pool.execute("UPDATE orders SET status = $2, updated_at = now() WHERE id = $1", order["id"], status)
@@ -1190,6 +1235,7 @@ class ChatSession:
         self.last_at: float | None = None
         self.batch: list[Incoming] = []  # what the running generation is answering
         self.batch_first_at: float | None = None
+        self.batch_last_at: float | None = None  # arrival of the batch's last message (latency measurement)
         self.last_activity = clock.now()
         self.stats = SessionStats()
         self.lock = asyncio.Lock()
@@ -1240,7 +1286,7 @@ class ChatSession:
                 return
             self._timer = None
             self.batch = sorted(self.buffer, key=lambda m: m.tg_id)
-            self.batch_first_at = self.first_at
+            self.batch_first_at, self.batch_last_at = self.first_at, self.last_at
             self.buffer, self.first_at, self.last_at = [], None, None
             self.state = GENERATING
             self._gen = self._spawn(self._generate_and_send(self.batch))
@@ -1293,6 +1339,8 @@ class ChatSession:
                 await self.clock.sleep(self.rng.uniform(self.cfg.gap_min, self.cfg.gap_max))
             try:
                 await self.pipeline.send_part(self.chat_id, part)
+                if not sent and self.batch_last_at is not None:  # PLAN §10: client's last message → first part
+                    reply.extra["first_part_after_s"] = round(self.clock.now() - self.batch_last_at, 2)
                 sent.append(part)
             except Exception:
                 log.exception("sending part %d failed for chat %s", i, self.chat_id)
@@ -1511,6 +1559,8 @@ class LlmPipeline:
 
     async def commit(self, chat_id: int, batch: list[Incoming], sent_parts: list[RenderedPart], reply: Reply) -> None:
         """After delivery: history, then the order write and any admin-group action (never for a cancelled reply)."""
+        if sent_parts and reply.extra.get("first_part_after_s") is not None:  # kept for /stats (latency p50/p90)
+            sent_parts[0].meta = {**(sent_parts[0].meta or {}), "first_part_after_s": reply.extra["first_part_after_s"]}
         for part in sent_parts:
             await self.storage.save_message(chat_id, "assistant", part.history_text, meta=part.meta)
         await self.storage.mark_answered([m.db_id for m in batch if m.db_id])

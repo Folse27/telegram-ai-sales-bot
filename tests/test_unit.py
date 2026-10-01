@@ -710,3 +710,40 @@ async def test_handoff_ack_only_when_nothing_promised_a_follow_up(storage):
     card = TPL.render({"template_id": "product_card", "product_slug": "sensor-3-0"})  # no promise in it
     await pl.commit(46, [], [card], main.Reply([card], {"escalate": esc}))
     assert [c[2] for c in tr.of("text") if c[1] == 46] == [TPL.text("handoff_ack").text]
+
+
+# ═══════════════════════════ Step 8: /stats and latency ═══════════════════════════
+
+async def test_first_part_latency_is_measured_from_the_last_client_message():
+    clock, _, pl, sm = setup()
+    await say(sm, "привіт", 1)
+    await clock.advance(3)
+    await say(sm, "є чохли?", 2)  # last message at t=3 → call at 13, first part at 15
+    await clock.advance(20)
+    assert pl.extras[-1]["first_part_after_s"] == 12.0
+
+
+def test_llm_call_cost():
+    row = {"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 500,
+           "cache_read_tokens": 15000, "cache_write_tokens": 0}
+    assert main.llm_call_cost(row) == pytest.approx((1000 * 2 + 500 * 10 + 15000 * 0.2) / 1e6)
+    row = {**row, "model": "claude-haiku-4-5-20251001", "cache_read_tokens": 0, "cache_write_tokens": 10000}
+    assert main.llm_call_cost(row, "5m") == pytest.approx((1000 + 2500 + 10000 * 1.25) / 1e6)
+
+
+@pytest.mark.db
+async def test_stats_command(storage):
+    ho = Handoff(SimpleNamespace(admin_chat_id=ADMIN, cache_ttl="1h"), storage, FakeTransport(), TPL, ORD)
+    assert "даних ще немає" in await ho.command("/stats")
+    await storage.upsert_client(47, 47, None, "Тест")
+    usage = SimpleNamespace(input_tokens=500, output_tokens=300, cache_read_input_tokens=15000,
+                            cache_creation_input_tokens=0)
+    await storage.log_llm_call(47, "claude-sonnet-5-5", 1, usage, 4000, "invalid", None)
+    await storage.log_llm_call(47, "claude-sonnet-5-5", 2, usage, 6000, "ok", None)
+    for s in (11.5, 14.0, 20.0):
+        await storage.save_message(47, "assistant", "x", meta={"first_part_after_s": s})
+    await storage.pool.execute("INSERT INTO orders (chat_id, status) VALUES (47, 'PAID')")
+    out = await ho.command("/stats")
+    assert "Відповідей: 1" in out and "відхилено валідатором: 1" in out
+    assert "p50 14.0 с · p90 20.0 с (3 відп.)" in out and "PAID 1" in out and "Кеш: прочитано 97%" in out
+    assert "за весь час" in await ho.command("/stats 0")
