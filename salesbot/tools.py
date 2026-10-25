@@ -55,8 +55,11 @@ async def cmd_check_config(args: argparse.Namespace, s: Settings) -> int:
     async def run(storage: Storage) -> int:
         shop = await ShopData.load(s.shop_dir, storage)
         catalog = assemble(shop, s)
+        cache = await PhotoCache(storage).load()
+        srcs = catalog.all_photo_sources()
         print(f"OK: settings complete · shop from {shop.source}: catalog {catalog.version}, "
-              f"{len(catalog.products)} products · model {s.model}")
+              f"{len(catalog.products)} products · model {s.model} · "
+              f"photos cached {sum(src in cache.ids for src in srcs)}/{len(srcs)} (the rest upload on first use)")
         return 0
     return await with_storage(s, run)
 
@@ -88,7 +91,13 @@ async def cmd_photos(args: argparse.Namespace, s: Settings) -> int:
             legacy = json.loads(await asyncio.to_thread(Path(args.file).read_text, encoding="utf-8"))
             n = await cache.import_legacy(legacy,
                                          catalog.all_photo_sources())
-            print(f"imported {n} file_id(s); {len(cache.ids)} cached")
+            srcs = catalog.all_photo_sources()
+            covered = sum(src in cache.ids for src in srcs)
+            print(f"shop from {shop.source}: imported {n} file_id(s); {covered}/{len(srcs)} of its photos cached")
+            if not covered:
+                print("nothing matched this shop's photos: is SHOP_SOURCE the shop these file_ids belong to?",
+                      file=sys.stderr)
+                return 1
             return 0
         todo = [src for src in catalog.all_photo_sources() if src not in cache.ids][: args.limit or None]
         print(f"{len(todo)} photo(s) to upload to chat {args.chat}")
