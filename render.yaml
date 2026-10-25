@@ -54,7 +54,7 @@ services:
         value: "1"
       - key: PART_GAP_MAX
         value: "3"
-      - key: DAILY_REPLIES_PER_USER
-        value: "50"
-      - key: DAILY_BUDGET_USD
-        value: "3"
+      - key: DAILY_REPLIES_PER_USER  # set in the dashboard (0 = no limit); default 50
+        sync: false
+      - key: DAILY_BUDGET_USD  # set in the dashboard, USD per 24 h (0 = no limit); default 3
+        sync: false
