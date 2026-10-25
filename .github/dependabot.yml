@@ -1,0 +1,15 @@
+# Weekly dependency updates as pull requests; CI runs on each one before anything is merged.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:  # one PR for the routine updates, separate PRs for major versions
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

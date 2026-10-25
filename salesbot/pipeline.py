@@ -60,7 +60,9 @@ class LlmPipeline:
                 now = time.monotonic()
                 if self._budget_alert_at is None or now - self._budget_alert_at > BUDGET_ALERT_EVERY:
                     self._budget_alert_at = now
-                    log.warning("daily AI budget reached: $%.2f of $%.2f", spent, s.daily_budget_usd)
+                    log.warning("daily AI budget reached: $%.2f of $%.2f", spent, s.daily_budget_usd,
+                                extra={"event": "budget_reached", "spent_usd": round(spent, 4),
+                                       "budget_usd": s.daily_budget_usd})
                     await self.handoff.notify(f"⚠️ Денний бюджет на ШІ вичерпано (≈ ${spent:.2f} з "
                                               f"${s.daily_budget_usd:.2f}). Бот відповідає шаблоном до кінця доби.")
                 return "budget"
@@ -139,7 +141,9 @@ class LlmPipeline:
                                              "parts": data.get("parts") if data and check.errors else None})
             if data and not check.errors:
                 return self._build(data, check, plan)
-            log.warning("chat %s attempt %d rejected: %s", chat_id, attempt, check.errors)
+            log.warning("chat %s attempt %d rejected: %s", chat_id, attempt, check.errors,
+                        extra={"event": "reply_rejected", "chat_id": chat_id, "attempt": attempt,
+                               "errors": check.errors})
             if attempt == 1 and call:
                 # The assistant turn goes back unchanged (thinking blocks included: newer models reject edited ones).
                 messages = [
@@ -255,7 +259,8 @@ class LlmPipeline:
                 order_id = await self.storage.pool.fetchval(
                     "INSERT INTO orders (chat_id, status, data) VALUES ($1, $2, $3) RETURNING id",
                     chat_id, plan.status, plan.data)
-            log.info("order %s → %s (chat %s)", order_id, plan.status, chat_id)
+            log.info("order %s → %s (chat %s)", order_id, plan.status, chat_id,
+                     extra={"event": "order_status", "order_id": order_id, "status": plan.status, "chat_id": chat_id})
             if plan.notify:
                 await self.handoff.notify_order(plan.notify, order_id, chat_id)
             if plan.review_reason:

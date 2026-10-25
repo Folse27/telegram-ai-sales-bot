@@ -152,6 +152,7 @@ checked at startup, and the bot refuses to start with a message that names each 
 | `SHOP_SOURCE` | `data/sample` (default), another folder, or `db` |
 | `DAILY_REPLIES_PER_USER`, `DAILY_BUDGET_USD` | Usage limits; `0` turns a limit off |
 | `CACHE_TTL`, `MAX_PARTS`, `DEBOUNCE_*`, `PART_GAP_*` | Prompt cache lifetime, messages per reply, timing |
+| `LOG_FORMAT` | `text` (default) or `json`: one object per line with fields such as `event`, `chat_id`, `latency_ms` |
 
 ## Tests and CI
 
@@ -161,12 +162,13 @@ ruff check salesbot tests
 mypy
 ```
 
-- **58 tests:**
-  - 48 need nothing: the debounce engine on a virtual clock, catalog maths, retrieval, the reply checks, the
-    order state machine, and the request shape per model.
+- **61 tests:**
+  - 51 need nothing: the debounce engine on a virtual clock, catalog maths, retrieval, the reply checks, the
+    order state machine, the request shape per model, and the log format.
   - 10 run against a real Postgres, each in its own throwaway schema: handoff, relay, commands, `/stats`,
     photo cache, shop data, usage limits.
 - **CI:** GitHub Actions runs lint, the type check and all tests against a Postgres service on every push.
+  Dependabot opens weekly update pull requests for the Python packages and the CI actions.
 - **Live harness:** `tests/test_live.py` plays 19 scripted conversations against the real model, including a
   prompt-injection discount attempt, a VAT trap, a burst of messages, a full order and a staff takeover. It
   costs money, so it only runs with `RUN_LIVE=1` and stops at a budget (`LIVE_BUDGET`, default $4). On the
@@ -184,6 +186,7 @@ mypy
   anyway is dropped and escalated.
 - **Duplicate updates** from Telegram retries are ignored.
 - **Usage limits** cap what a single client, or the whole bot, can spend per day.
+- **Logs** contain ids, counts, timings and statuses, never the text of client messages.
 
 ## Costs
 

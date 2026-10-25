@@ -131,9 +131,14 @@ class LLM:
             resp = await self.client.messages.create(**self.request(messages))
         block = next((b for b in resp.content if b.type == "tool_use" and b.name == "reply"), None)
         latency = int((time.monotonic() - t0) * 1000)
+        u = resp.usage
         log.info("llm chat=%s attempt=%d %dms in=%s out=%s cache_read=%s cache_write=%s stop=%s", chat_id, attempt,
-                 latency, resp.usage.input_tokens, resp.usage.output_tokens, resp.usage.cache_read_input_tokens,
-                 resp.usage.cache_creation_input_tokens, resp.stop_reason)
+                 latency, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
+                 resp.stop_reason,
+                 extra={"event": "llm_call", "chat_id": chat_id, "attempt": attempt, "latency_ms": latency,
+                        "model": self.settings.model, "input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
+                        "cache_read_tokens": u.cache_read_input_tokens, "cache_write_tokens": u.cache_creation_input_tokens,
+                        "stop_reason": resp.stop_reason})
         if resp.stop_reason in ("refusal", "max_tokens"):  # unusable: treated like a missing reply
             block = None
         return resp, (block and {"id": block.id, "input": block.input}), latency

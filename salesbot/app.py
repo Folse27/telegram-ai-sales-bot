@@ -16,6 +16,7 @@ from aiohttp.abc import AbstractAccessLogger
 
 from .bot import build_dispatcher, build_runtime, reschedule_unanswered
 from .config import Settings, get_settings
+from .logs import setup_logging
 
 log = logging.getLogger("salesbot")
 
@@ -27,7 +28,9 @@ class AccessLogger(AbstractAccessLogger):
         if request.path == "/healthz":
             return
         path = "/tg/***" if request.path.startswith("/tg/") else request.path
-        self.logger.info("%s %s %s %.0fms", request.method, path, response.status, time * 1000)
+        self.logger.info("%s %s %s %.0fms", request.method, path, response.status, time * 1000,
+                         extra={"event": "http", "method": request.method, "path": path, "status": response.status,
+                                "duration_ms": round(time * 1000)})
 
 
 async def healthz(request: web.Request) -> web.Response:
@@ -81,9 +84,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m salesbot")
     parser.add_argument("--polling", action="store_true", help="local dev: delete the webhook and long-poll")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
     settings = get_settings()
+    setup_logging(settings.log_format)
     bot = Bot(settings.telegram_bot_token)
     dp = build_dispatcher()
     if args.polling:

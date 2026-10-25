@@ -149,8 +149,8 @@ class Orders:
             if k == "phone" and v:
                 phone = normalize_phone(v)
                 if not phone:
-                    errors.append(f"phone {v!r} is not a valid Ukrainian number: leave it null and ask the client "
-                                  "for a number like +380XXXXXXXXX")
+                    errors.append("the phone the client gave is not a valid Ukrainian number: leave it null and ask "
+                                  "the client for a number like +380XXXXXXXXX")
                     continue
                 data["customer"]["phone"] = phone
             elif k == "buyer_type":

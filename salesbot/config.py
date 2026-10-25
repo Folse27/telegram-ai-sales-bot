@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     debounce_max_wait: float = 25
     part_gap_min: float = 1
     part_gap_max: float = 3
+
+    log_format: Literal["text", "json"] = "text"  # json: one object per line with structured fields (production)
 
     # Usage limits (0 = no limit)
     daily_replies_per_user: int = 50  # AI replies per client in 24 h
