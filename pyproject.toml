@@ -7,6 +7,7 @@ license = "MIT"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # import salesbot from the checkout, whether run as `pytest` or `python -m pytest`
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
