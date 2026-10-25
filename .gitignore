@@ -1,9 +1,27 @@
+# Python / tooling
 .venv/
-.env
 __pycache__/
 *.pyc
 .pytest_cache/
-# scrape.py HTML cache (re-downloadable)
+.mypy_cache/
+.ruff_cache/
+
+# Secrets: every env file except the documented template
+.env
+.env.*
+!.env.example
+
+# Private shop data (uploaded to the database with `python -m salesbot.tools shop upload data/live`)
+data/live/
 data/_cache/
-# local Claude Code settings/skills, not part of the bot
+
+# Local-only tools and working notes
+scrape.py
+PLAN.md
+STATE.md
+reply-flow.png
+
+# Editor / assistant settings
 .claude/
+.vscode/
+.idea/

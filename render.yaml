@@ -1,18 +1,20 @@
-# Render Blueprint. Database is Neon (external), so there is no `databases:` section. See PLAN.md §12.
+# Render Blueprint (free web service). The database is external (any Postgres, e.g. Neon), so there is no
+# `databases:` section. The build fails, and the running version stays up, if a required variable or the shop data
+# is missing: see `python -m salesbot.tools check-config`.
 services:
   - type: web
     name: telegram-sales-bot
     runtime: python
     plan: free
     region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    buildCommand: pip install -r requirements.txt && python -m salesbot.tools check-config
+    startCommand: python -m salesbot
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.14.7
-      # secrets: Render asks for these when the Blueprint is first created
+      # secrets and per-deployment values: set in the dashboard, never overwritten by Blueprint syncs
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: WEBHOOK_SECRET
@@ -23,23 +25,23 @@ services:
         sync: false
       - key: ADMIN_CHAT_ID
         sync: false
-      - key: PHOTO_CHANNEL_ID
+      - key: SHOP_SOURCE  # "db" for shop data uploaded with salesbot.tools, or a folder such as data/sample
         sync: false
-      # behaviour
-      - key: MODEL  # set in the dashboard: claude-haiku-4-5 or claude-sonnet-5-5 (not overwritten by syncs)
+      - key: MODEL  # claude-haiku-4-5 or claude-sonnet-5-5
         sync: false
-      - key: ALLOWED_USER_IDS
-        value: ""
       - key: TESTER_IDS
         sync: false
+      - key: MAX_PARTS  # 1–5 (default 3)
+        sync: false
+      # behaviour
+      - key: ALLOWED_USER_IDS
+        value: ""
       - key: LLM_EFFORT
         value: low
       - key: LLM_THINKING
         value: adaptive
       - key: CACHE_TTL
         value: 1h
-      - key: MAX_PARTS  # set in the dashboard: 1–5 (default 3 if unset; not overwritten by syncs)
-        sync: false
       - key: PERSONA_NAME
         value: Микола
       - key: DEBOUNCE_SECONDS
@@ -49,4 +51,8 @@ services:
       - key: PART_GAP_MIN
         value: "1"
       - key: PART_GAP_MAX
+        value: "3"
+      - key: DAILY_REPLIES_PER_USER
+        value: "50"
+      - key: DAILY_BUDGET_USD
         value: "3"

@@ -1,0 +1,750 @@
+{
+ "catalog_version": "sample-1",
+ "source": "fictional sample shop (all products, prices and texts are invented)",
+ "vat_rate": 0.2,
+ "categories": [
+  {
+   "slug": "detectors",
+   "name_uk": "Детектори дронів",
+   "count": 2
+  },
+  {
+   "slug": "accessories",
+   "name_uk": "Аксесуари",
+   "count": 3
+  },
+  {
+   "slug": "antennas",
+   "name_uk": "Антени",
+   "count": 2
+  },
+  {
+   "slug": "ew",
+   "name_uk": "Системи РЕБ",
+   "count": 1
+  },
+  {
+   "slug": "drones",
+   "name_uk": "FPV-дрони",
+   "count": 1
+  },
+  {
+   "slug": "power",
+   "name_uk": "Зарядні станції",
+   "count": 1
+  }
+ ],
+ "vat_policy": {
+  "default_quote": "with_vat",
+  "without_vat_condition_uk": "Ціна без ПДВ можлива лише за наявності сертифіката кінцевого споживача, де кінцевим отримувачем товару є сили оборони чи правоохоронні органи.",
+  "faq": [
+   {
+    "q": "Чи може військовослужбовець купити без ПДВ?",
+    "a": "Лише за наявності сертифіката кінцевого споживача на військову частину; статус військовослужбовця сам по собі такого права не дає."
+   }
+  ]
+ },
+ "products": [
+  {
+   "id": 101,
+   "slug": "sensor-s3",
+   "url": "https://obrii-demo.example/products/sensor-s3",
+   "name_uk": "Детектор дронів «Сенсор S3»",
+   "short_name": "Сенсор S3",
+   "category": {
+    "slug": "detectors",
+    "name_uk": "Детектори дронів"
+   },
+   "price": {
+    "with_vat": 24000,
+    "without_vat": 20000,
+    "currency": "UAH"
+   },
+   "option_groups": [
+    {
+     "id": "upgrade",
+     "label_uk": "Апгрейд",
+     "exclusive": false
+    },
+    {
+     "id": "antenna",
+     "label_uk": "Виносна антена",
+     "exclusive": true
+    },
+    {
+     "id": "accessory",
+     "label_uk": "Аксесуари",
+     "exclusive": false
+    },
+    {
+     "id": "custom",
+     "label_uk": "Власний колір",
+     "exclusive": false
+    }
+   ],
+   "options": [
+    {
+     "id": "upgrade",
+     "label_uk": "Апгрейд до S4",
+     "flags": [],
+     "price": {
+      "with_vat": 12000,
+      "without_vat": 10000
+     },
+     "group": "upgrade",
+     "note_uk": "Оновлення до «Сенсор S4» у сервісі виробника."
+    },
+    {
+     "id": "videovykhid",
+     "label_uk": "Відеовихід",
+     "flags": [],
+     "price": {
+      "with_vat": 480,
+      "without_vat": 400
+     },
+     "group": "accessory"
+    },
+    {
+     "id": "autoholder",
+     "label_uk": "Автомобільний тримач",
+     "flags": [],
+     "price": {
+      "with_vat": 1800,
+      "without_vat": 1500
+     },
+     "group": "accessory"
+    },
+    {
+     "id": "antena3m",
+     "label_uk": "Виносна антена (3 м кабелю)",
+     "flags": [],
+     "price": {
+      "with_vat": 9600,
+      "without_vat": 8000
+     },
+     "group": "antenna"
+    },
+    {
+     "id": "antena10m",
+     "label_uk": "Виносна антена (10 м кабелю)",
+     "flags": [],
+     "price": {
+      "with_vat": 12000,
+      "without_vat": 10000
+     },
+     "group": "antenna"
+    },
+    {
+     "id": "customcolor",
+     "label_uk": "Власний колір",
+     "flags": [
+      "on_request"
+     ],
+     "price": {
+      "with_vat": 0,
+      "without_vat": 0
+     },
+     "group": "custom"
+    }
+   ],
+   "colors": [
+    {
+     "id": "chornyi",
+     "label_uk": "чорний",
+     "photo_key": "sensor-s3/color/chornyi",
+     "src": "data/sample/images/sensor-s3-chornyi.png"
+    },
+    {
+     "id": "oliva",
+     "label_uk": "олива",
+     "photo_key": "sensor-s3/color/oliva",
+     "src": "data/sample/images/sensor-s3-oliva.png"
+    },
+    {
+     "id": "pisok",
+     "label_uk": "пісочний",
+     "photo_key": "sensor-s3/color/pisok",
+     "src": "data/sample/images/sensor-s3-pisok.png"
+    }
+   ],
+   "specs": [
+    {
+     "param": "Діапазони",
+     "value": "3"
+    },
+    {
+     "param": "Дальність виявлення",
+     "value": "до 1,5 км"
+    },
+    {
+     "param": "Автономність",
+     "value": "до 10 год"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Портативний детектор дронів на три діапазони для позиції або авто.",
+   "description_uk": "«Сенсор S3» — портативний детектор, що сповіщає про наближення FPV-дронів у трьох діапазонах частот. Працює від вбудованого акумулятора, має звукову та вібросигналізацію.",
+   "box_contents": [
+    "«Сенсор S3»",
+    "Кабель USB-C"
+   ],
+   "faq": [
+    {
+     "q": "Чи можна встановити в авто?",
+     "a": "Так, з автомобільним тримачем з опцій."
+    },
+    {
+     "q": "Чи є відеовихід?",
+     "a": "Так, як опція «Відеовихід»."
+    }
+   ],
+   "related_models": [
+    "sensor-s4"
+   ],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "sensor-s3/0",
+     "src": "data/sample/images/sensor-s3-0.png"
+    },
+    {
+     "key": "sensor-s3/1",
+     "src": "data/sample/images/sensor-s3-1.png"
+    },
+    {
+     "key": "sensor-s3/2",
+     "src": "data/sample/images/sensor-s3-2.png"
+    }
+   ],
+   "tags": [
+    "сенсор",
+    "детектор",
+    "дрон"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 102,
+   "slug": "sensor-s4",
+   "url": "https://obrii-demo.example/products/sensor-s4",
+   "name_uk": "Детектор дронів «Сенсор S4»",
+   "short_name": "Сенсор S4",
+   "category": {
+    "slug": "detectors",
+    "name_uk": "Детектори дронів"
+   },
+   "price": {
+    "with_vat": 36000,
+    "without_vat": 30000,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Діапазони",
+     "value": "4"
+    },
+    {
+     "param": "Дальність виявлення",
+     "value": "до 2,5 км"
+    },
+    {
+     "param": "Автономність",
+     "value": "до 12 год"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Детектор дронів на чотири діапазони з більшою дальністю.",
+   "description_uk": "«Сенсор S4» — старша модель лінійки: чотири діапазони частот і більша дальність виявлення.",
+   "box_contents": [
+    "«Сенсор S4»",
+    "Кабель USB-C"
+   ],
+   "faq": [
+    {
+     "q": "Чим S4 відрізняється від S3?",
+     "a": "Четвертим діапазоном і більшою дальністю виявлення."
+    }
+   ],
+   "related_models": [
+    "sensor-s3"
+   ],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "sensor-s4/0",
+     "src": "data/sample/images/sensor-s4-0.png"
+    },
+    {
+     "key": "sensor-s4/1",
+     "src": "data/sample/images/sensor-s4-1.png"
+    }
+   ],
+   "tags": [
+    "сенсор",
+    "детектор",
+    "дрон"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 103,
+   "slug": "sensor-pouch",
+   "url": "https://obrii-demo.example/products/sensor-pouch",
+   "name_uk": "Підсумок для детектора «Сенсор»",
+   "short_name": "Підсумок для Сенсора",
+   "category": {
+    "slug": "accessories",
+    "name_uk": "Аксесуари"
+   },
+   "price": {
+    "with_vat": 1200,
+    "without_vat": 1000,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [
+    {
+     "id": "chornyi",
+     "label_uk": "чорний",
+     "photo_key": "sensor-pouch/color/chornyi",
+     "src": "data/sample/images/sensor-pouch-chornyi.png"
+    },
+    {
+     "id": "oliva",
+     "label_uk": "олива",
+     "photo_key": "sensor-pouch/color/oliva",
+     "src": "data/sample/images/sensor-pouch-oliva.png"
+    }
+   ],
+   "specs": [
+    {
+     "param": "Матеріал",
+     "value": "кордура"
+    },
+    {
+     "param": "Кріплення",
+     "value": "MOLLE"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Тканинний підсумок з кріпленням MOLLE для детекторів «Сенсор».",
+   "description_uk": "Підсумок захищає детектор від пилу й вологи та кріпиться на розвантаження за системою MOLLE.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "sensor-pouch/0",
+     "src": "data/sample/images/sensor-pouch-0.png"
+    }
+   ],
+   "tags": [
+    "підсумок",
+    "чохол"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 104,
+   "slug": "car-holder",
+   "url": "https://obrii-demo.example/products/car-holder",
+   "name_uk": "Автомобільний тримач для детектора «Сенсор»",
+   "short_name": "Автотримач для Сенсора",
+   "category": {
+    "slug": "accessories",
+    "name_uk": "Аксесуари"
+   },
+   "price": {
+    "with_vat": 1800,
+    "without_vat": 1500,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Кріплення",
+     "value": "присоска або клейка основа"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Тримач для кріплення детектора «Сенсор» у салоні авто.",
+   "description_uk": "Тримач кріпиться на панель або скло й тримає детектор у полі зору водія.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "car-holder/0",
+     "src": "data/sample/images/car-holder-0.png"
+    }
+   ],
+   "tags": [
+    "тримач",
+    "автотримач",
+    "авто"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 105,
+   "slug": "antenna-omni-5-8",
+   "url": "https://obrii-demo.example/products/antenna-omni-5-8",
+   "name_uk": "Антена всенаправлена «Омні 5.8»",
+   "short_name": "Омні 5.8",
+   "category": {
+    "slug": "antennas",
+    "name_uk": "Антени"
+   },
+   "price": {
+    "with_vat": 600,
+    "without_vat": 500,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Частота",
+     "value": "5,8 ГГц"
+    },
+    {
+     "param": "Роз'єм",
+     "value": "SMA"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Всенаправлена антена 5,8 ГГц для FPV-систем.",
+   "description_uk": "«Омні 5.8» — компактна всенаправлена антена для прийому відеосигналу FPV на частоті 5,8 ГГц.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "antenna-omni-5-8/0",
+     "src": "data/sample/images/antenna-omni-5-8-0.png"
+    }
+   ],
+   "tags": [
+    "антена",
+    "омні",
+    "всенаправлена"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 106,
+   "slug": "antenna-spiral-5-8",
+   "url": "https://obrii-demo.example/products/antenna-spiral-5-8",
+   "name_uk": "Спрямована антена «Спіраль 5.8»",
+   "short_name": "Спіраль 5.8",
+   "category": {
+    "slug": "antennas",
+    "name_uk": "Антени"
+   },
+   "price": {
+    "with_vat": 1440,
+    "without_vat": 1200,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Частота",
+     "value": "5,8 ГГц"
+    },
+    {
+     "param": "Роз'єм",
+     "value": "SMA"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Спрямована спіральна антена 5,8 ГГц для більшої дальності прийому.",
+   "description_uk": "«Спіраль 5.8» — спрямована антена з кутом огляду близько 40°, збільшує дальність прийому FPV-сигналу.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "antenna-spiral-5-8/0",
+     "src": "data/sample/images/antenna-spiral-5-8-0.png"
+    }
+   ],
+   "tags": [
+    "антена",
+    "спіраль",
+    "спрямована"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 107,
+   "slug": "shield-4m",
+   "url": "https://obrii-demo.example/products/shield-4m",
+   "name_uk": "Система РЕБ «Щит 4М»",
+   "short_name": "Щит 4М",
+   "category": {
+    "slug": "ew",
+    "name_uk": "Системи РЕБ"
+   },
+   "price": {
+    "with_vat": 96000,
+    "without_vat": 80000,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Діапазони",
+     "value": "4"
+    },
+    {
+     "param": "Живлення",
+     "value": "24 В"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Стаціонарна система РЕБ на чотири діапазони для захисту позиції.",
+   "description_uk": "«Щит 4М» — стаціонарна система радіоелектронної боротьби на чотири діапазони для захисту позицій від FPV-дронів.",
+   "box_contents": [
+    "Блок «Щит 4М»",
+    "Чотири антени",
+    "Кабель живлення"
+   ],
+   "faq": [
+    {
+     "q": "З якими антенами постачається?",
+     "a": "У комплекті чотири всенаправлені антени."
+    }
+   ],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "shield-4m/0",
+     "src": "data/sample/images/shield-4m-0.png"
+    },
+    {
+     "key": "shield-4m/1",
+     "src": "data/sample/images/shield-4m-1.png"
+    }
+   ],
+   "tags": [
+    "щит",
+    "реб",
+    "глушник"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 108,
+   "slug": "strizh-7",
+   "url": "https://obrii-demo.example/products/strizh-7",
+   "name_uk": "FPV-дрон «Стриж 7\"»",
+   "short_name": "Стриж 7\"",
+   "category": {
+    "slug": "drones",
+    "name_uk": "FPV-дрони"
+   },
+   "price": {
+    "with_vat": 18000,
+    "without_vat": 15000,
+    "currency": "UAH"
+   },
+   "option_groups": [
+    {
+     "id": "battery",
+     "label_uk": "Акумулятор",
+     "exclusive": true
+    }
+   ],
+   "options": [
+    {
+     "id": "battery4s",
+     "label_uk": "Акумулятор 4S",
+     "flags": [],
+     "price": {
+      "with_vat": 2400,
+      "without_vat": 2000
+     },
+     "group": "battery"
+    },
+    {
+     "id": "battery6s",
+     "label_uk": "Акумулятор 6S",
+     "flags": [],
+     "price": {
+      "with_vat": 3600,
+      "without_vat": 3000
+     },
+     "group": "battery"
+    }
+   ],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Рама",
+     "value": "7\""
+    },
+    {
+     "param": "Відеосистема",
+     "value": "аналогова 5,8 ГГц"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "FPV-дрон з 7-дюймовою рамою.",
+   "description_uk": "«Стриж 7\"» — FPV-дрон з 7-дюймовою рамою та аналоговою відеосистемою.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "strizh-7/0",
+     "src": "data/sample/images/strizh-7-0.png"
+    },
+    {
+     "key": "strizh-7/1",
+     "src": "data/sample/images/strizh-7-1.png"
+    }
+   ],
+   "tags": [
+    "стриж",
+    "fpv",
+    "дрон"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 109,
+   "slug": "enerhiia-1200",
+   "url": "https://obrii-demo.example/products/enerhiia-1200",
+   "name_uk": "Зарядна станція «Енергія-1200»",
+   "short_name": "Енергія-1200",
+   "category": {
+    "slug": "power",
+    "name_uk": "Зарядні станції"
+   },
+   "price": {
+    "with_vat": 42000,
+    "without_vat": 35000,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Ємність",
+     "value": "1200 Вт·год"
+    },
+    {
+     "param": "Виходи",
+     "value": "220 В, 24 В, USB-C"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Зарядна станція 1200 Вт·год для живлення техніки на позиції.",
+   "description_uk": "«Енергія-1200» живить детектори, системи РЕБ і ноутбуки від вбудованого акумулятора 1200 Вт·год.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "enerhiia-1200/0",
+     "src": "data/sample/images/enerhiia-1200-0.png"
+    }
+   ],
+   "tags": [
+    "енергія",
+    "зарядна",
+    "станція"
+   ],
+   "warranty_uk": "Гарантія — 12 місяців від дати покупки.",
+   "returns_uk": "Повернення й обмін — протягом 14 днів, якщо товар не був у використанні й має повну комплектацію.",
+   "delivery_uk": "Доставка Новою Поштою у відділення або кур'єром, за тарифами перевізника.",
+   "payment_uk": "Повна передоплата на рахунок, реквізити надсилаються після підтвердження замовлення."
+  },
+  {
+   "id": 110,
+   "slug": "mast-telescopic",
+   "url": "https://obrii-demo.example/products/mast-telescopic",
+   "name_uk": "Щогла телескопічна алюмінієва",
+   "short_name": "Щогла телескопічна",
+   "category": {
+    "slug": "accessories",
+    "name_uk": "Аксесуари"
+   },
+   "price": {
+    "with_vat": 6000,
+    "without_vat": 5000,
+    "currency": "UAH"
+   },
+   "option_groups": [],
+   "options": [],
+   "colors": [],
+   "specs": [
+    {
+     "param": "Висота",
+     "value": "до 6 м"
+    }
+   ],
+   "spec_notes": [],
+   "summary_uk": "Телескопічна щогла для піднімання антен.",
+   "description_uk": "Алюмінієва щогла для антен, розкладається до 6 м.",
+   "box_contents": [],
+   "faq": [],
+   "related_models": [],
+   "nato_codified": false,
+   "photos": [
+    {
+     "key": "mast-telescopic/0",
+     "src": "data/sample/images/mast-telescopic-0.png"
+    }
+   ],
+   "tags": [
+    "щогла",
+    "телескопічна"
+   ]
+  }
+ ]
+}

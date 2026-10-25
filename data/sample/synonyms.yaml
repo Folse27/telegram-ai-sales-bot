@@ -1,0 +1,22 @@
+# Client spelling → catalog spelling (retrieval normalisation). An empty value drops the word.
+synonyms:
+  sensor: сенсор
+  с3: s3
+  с4: s4
+  shield: щит
+  shchyt: щит
+  4m: 4м
+  strizh: стриж
+  omni: омні
+  омни: омні
+  spiral: спіраль
+  спираль: спіраль
+  антенна: антена
+  антенну: антена
+  антенны: антени
+  energiya: енергія
+  enerhiia: енергія
+  глушилка: глушник
+  рэб: реб
+  сколько: ""
+  стоит: ""

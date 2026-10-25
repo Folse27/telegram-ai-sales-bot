@@ -1,15 +1,66 @@
-"""Shared fakes: a virtual clock, a recording Telegram transport and a scripted pipeline."""
+"""Shared test fixtures: a virtual clock, a recording Telegram transport, a scripted pipeline, the sample shop,
+and a throwaway Postgres schema per test (TEST_DATABASE_URL; tests that need it are skipped without it)."""
 from __future__ import annotations
 
 import asyncio
 import heapq
 import itertools
-import sys
-from pathlib import Path
+import uuid
+from types import SimpleNamespace
+from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pytest
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from main import Incoming, Reply  # noqa: E402
+from salesbot.catalog import Catalog
+from salesbot.config import BASE_DIR, SAMPLE_SHOP_DIR, Settings
+from salesbot.llm import build_system
+from salesbot.orders import Orders
+from salesbot.sessions import Incoming, Reply
+from salesbot.shop import ShopData
+from salesbot.storage import Storage
+from salesbot.templates import Templates
+from salesbot.transport import OutPhoto
+from salesbot.validation import Validator, reference_numbers
+
+ADMIN = -100500
+
+# ── the fictional sample shop, shared by the pure tests ──
+SHOP = ShopData.from_folder(SAMPLE_SHOP_DIR)
+CAT = Catalog(SHOP.catalog, SHOP.synonyms)
+CONTENT = SHOP.content
+TPL = Templates(CONTENT, CAT, "Микола")
+VAL = Validator(CAT, CONTENT)
+ORD = Orders(CAT, TPL)
+PERSONA = SimpleNamespace(persona_name="Микола")
+ALLOWED = reference_numbers(build_system(PERSONA, CAT, CONTENT, SHOP.examples)) | {"1"}
+
+
+def settings(**overrides: Any) -> Settings:
+    """Complete settings without reading .env or the environment."""
+    base: dict[str, Any] = {"telegram_bot_token": "1:x", "webhook_secret": "x", "anthropic_api_key": "test",
+                            "database_url": "postgresql://localhost/test", "admin_chat_id": ADMIN}
+    return Settings(_env_file=None, **{**base, **overrides})  # type: ignore[call-arg]
+
+
+class TestEnv(BaseSettings):
+    """Only what the tests need from .env or the environment (CI sets TEST_DATABASE_URL to a Postgres service)."""
+
+    __test__ = False  # not a test class
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
+    test_database_url: str = ""
+
+
+@pytest.fixture
+async def storage():
+    dsn = TestEnv().test_database_url
+    if not dsn:
+        pytest.skip("TEST_DATABASE_URL is not set")
+    schema = f"t_{uuid.uuid4().hex[:10]}"
+    st = await Storage.connect(dsn, schema=schema)
+    yield st
+    await st.pool.execute(f'DROP SCHEMA "{schema}" CASCADE')
+    await st.close()
 
 
 async def settle(rounds: int = 50) -> None:
@@ -21,7 +72,7 @@ async def settle(rounds: int = 50) -> None:
 class FakeClock:
     """Virtual time: sleep() parks until advance() moves the clock past the wake time."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.t = 0.0
         self._sleepers: list = []
         self._seq = itertools.count()
@@ -54,9 +105,10 @@ class FakeClock:
 class FakeTransport:
     """Records everything the bot would send to Telegram."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.calls: list[tuple] = []
         self._ids = itertools.count(1000)
+        self.reject_file_ids = False  # simulate Telegram refusing stale file_ids once
 
     def of(self, kind: str) -> list[tuple]:
         return [c for c in self.calls if c[0] == kind]
@@ -65,13 +117,15 @@ class FakeTransport:
         self.calls.append(("text", chat_id, text, reply_markup, reply_to))
         return next(self._ids)
 
-    async def send_photo(self, chat_id, file_id, caption=None) -> int:
-        self.calls.append(("photo", chat_id, file_id, caption))
-        return next(self._ids)
-
-    async def send_media_group(self, chat_id, file_ids, caption=None) -> list[int]:
-        self.calls.append(("media_group", chat_id, list(file_ids), caption))
-        return [next(self._ids) for _ in file_ids]
+    async def send_photos(self, chat_id, photos: list[OutPhoto], caption=None) -> list[str | None]:
+        if self.reject_file_ids and any(p.file_id for p in photos):
+            self.reject_file_ids = False
+            from aiogram.exceptions import TelegramBadRequest
+            from aiogram.methods import SendPhoto
+            raise TelegramBadRequest(SendPhoto(chat_id=chat_id, photo="x"), "Bad Request: wrong file identifier")
+        sent = [p.file_id or f"upload:{p.src}" for p in photos]
+        self.calls.append(("photos", chat_id, sent, caption))
+        return [p.file_id or f"fid:{p.src}" for p in photos]
 
     async def send_typing(self, chat_id) -> None:
         self.calls.append(("typing", chat_id))

@@ -1,0 +1,125 @@
+# Sample shop «Обрій Тех»: a FICTIONAL company. Products, contacts and payment details are invented.
+# All Ukrainian client-facing text. Python renders these; the model only picks template ids + parameters.
+# Voice: first person for the whole team ("я уточню"), never "менеджер підкаже".
+# Values in {braces} are filled by salesbot/templates.py (HTML-escaped). Telegram parse mode: HTML.
+version: 1
+
+persona:
+  name: Микола
+  full_name: Миколай
+  company: Обрій Тех
+  # Completes the prompt's first sentence: "You are Микола, an AI sales consultant for <intro_en>."
+  intro_en: Обрій Тех, a Ukrainian maker of drone detectors, antennas, electronic-warfare (РЕБ) systems, FPV drones and power stations
+
+departments:
+  sales:
+    title_uk: Відділ продажів
+    phone: "+38 000 111 22 01"
+    email: sales@obrii-demo.example
+    note_uk: ""
+  repair:
+    title_uk: Ремонт і сервісна підтримка
+    phone: "+38 000 111 22 02"
+    email: service@obrii-demo.example
+    note_uk: Лише з питань ремонту та сервісу.
+  tender:
+    title_uk: Тендерний відділ
+    phone: "+38 000 111 22 03"
+    email: tenders@obrii-demo.example
+    note_uk: Закупівлі через Prozorro та інші тендерні процедури.
+  distribution:
+    title_uk: Відділ дистрибуції (магазини та реселери)
+    phone: "+38 000 111 22 04"
+    email: distribution@obrii-demo.example
+    note_uk: ""
+  b2b_b2g:
+    title_uk: Відділ B2B та B2G
+    phone: "+38 000 111 22 05"
+    email: b2b@obrii-demo.example
+    note_uk: Для компаній, держзамовників і військових частин.
+  export:
+    title_uk: Експортний відділ
+    phone: ""
+    email: export@obrii-demo.example
+    note_uk: Для запитів з-за меж України.
+  events:
+    title_uk: Івент-відділ
+    phone: ""
+    email: events@obrii-demo.example
+    note_uk: Виставки, презентації, партнерські заходи.
+  vacancies:
+    title_uk: Вакансії
+    phone: ""
+    email: hr@obrii-demo.example
+    url: https://obrii-demo.example/vacancies
+    note_uk: Актуальні вакансії публікуються на сторінці вакансій.
+
+services_uk:
+  - Ремонт техніки
+  - Оренда детекторів
+  - 3D-друк корпусів
+  - Підбір комплектуючих
+
+# Shared policies, also given to the model (cached system prompt).
+policies_uk:
+  delivery: Доставка лише Новою Поштою (у відділення або кур'єром), доставку оплачує отримувач за тарифами перевізника.
+  payment: Повна передоплата на рахунок. Реквізити надсилаються автоматично після підтвердження замовлення.
+  vat: Ціни вказані з ПДВ. Ціна без ПДВ можлива лише за наявності сертифіката кінцевого споживача, де кінцевий отримувач — сили оборони чи правоохоронні органи.
+  seller: Продавець — виробник «Обрій Тех» (вигаданий, демонстраційний магазин).
+
+# Filled into the payment_details template; `markers` (plus the IBAN and code) flag details the model writes itself.
+# DEMO: every value is a placeholder.
+payment:
+  payee: ФОП «ДЕМО-ОТРИМУВАЧ»
+  payee_code: "0000000000"
+  iban: UA000000000000000000000000000
+  bank: ДЕМО-БАНК
+  purpose: Оплата за товар
+  markers: [ДЕМО-ОТРИМУВАЧ, ДЕМО-БАНК]
+
+templates:
+  # ── model-allowed ──
+  product_card:  # photos + name only; the bot's own text gives the price
+    caption_uk: "<b>{name_uk}</b>"
+    max_photos: 3
+  product_photos:
+    caption_uk: "{short_name}"
+    max_photos: 6
+  product_color:
+    caption_uk: "{short_name} — колір «{color_label}»"
+  price_quote:
+    line_uk: "• {short_name}{options_line} × {qty} — {line_with_vat} грн"
+    text_uk: "{lines}\nРазом: <b>{total_with_vat} грн з ПДВ</b>"
+  vat_explainer:
+    text_uk: "Ціна без ПДВ ({price_without_vat} грн) можлива лише за наявності сертифіката кінцевого споживача, де кінцевий отримувач — сили оборони чи правоохоронні органи. Чи підходить ваш випадок, я уточню і повернуся з відповіддю тут."
+  department_contact:
+    text_uk: "<b>{dept_title}</b>{dept_lines}{dept_note}"
+  services_list:
+    text_uk: "Послуги «Обрій Тех»:\n{services}\nВартість і терміни уточню для вас окремо — напишіть, яка послуга цікавить."
+
+  # ── order templates: the model chooses them, Python checks they're due and fills every value ──
+  # ── Python-only: greeting, demo_disclaimer, payment_received, handoff_ack, fallback_handoff, limit_reached, unsupported_media ──
+  greeting:
+    text_uk: "Вітаю! Я {persona_name}, консультант «Обрій Тех». Допоможу підібрати техніку, порахувати вартість і оформити замовлення. Що вас цікавить?"
+  demo_disclaimer:
+    text_uk: "ℹ️ Це демонстраційний бот-консультант вигаданого магазину. Товари, контакти та реквізити — вигадані."
+  order_summary:
+    text_uk: "Перевірте, будь ласка, замовлення:\n{lines}\nРазом: <b>{total_with_vat} грн з ПДВ</b>\nОтримувач: {full_name}, {phone}\nДоставка: Нова Пошта, {city}, відділення {np_branch} (за тарифами перевізника).\nВсе вірно? Якщо так, підтвердіть, будь ласка."
+  order_confirmed:
+    text_uk: "Замовлення №{order_id} підтверджено."
+  payment_details:  # values come from `payment` above
+    text_uk: "Оплата : {total_with_vat} грн\n\nНазва отримувача:\n{payee}\nКод отримувача: {payee_code}\n\nРахунок\n{iban}\n\nНазва банку:\n{bank}\nПризначення:\n{purpose}"
+  order_to_manager:
+    text_uk: "Замовлення №{order_id} прийнято. Деталі оформлення {reason_uk} я уточню і напишу вам тут."
+  payment_received:
+    text_uk: "Оплату отримано, дякуємо! Повідомлю вам тут, щойно замовлення буде відправлено."
+  order_cancelled:
+    text_uk: "Замовлення №{order_id} скасовано."
+  handoff_ack:
+    text_uk: "Я уточню це питання і повернуся з відповіддю тут."
+  fallback_handoff:
+    text_uk: "Хочу відповісти точно — уточню це питання і напишу вам тут."
+  limit_reached:  # daily usage limit (per client or the bot's AI budget); sent once, then the bot stays quiet
+    text_uk: "На сьогодні ліміт відповідей у цьому демо вичерпано. Напишіть, будь ласка, завтра — я відповім."
+  unsupported_media:
+    text_uk: "Поки що я читаю лише текст — напишіть, будь ласка, повідомленням 🙂"
